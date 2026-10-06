@@ -3,9 +3,9 @@
 # somebody's driveway and its location is where they live.
 #
 # Geometry is in fractions of the frame, from 0,0 at the top left to 1,1 at the
-# bottom right, so it stays put if the camera's resolution changes. A person or a
-# vehicle is where it stands, the middle of the bottom edge of its box, so draw zones
-# and lines on the ground.
+# bottom right, so it stays put if the camera's resolution changes. Any part of a
+# person or a vehicle counts: a zone holds whoever it overlaps, and a line fires when
+# somebody reaches it.
 
 # Needed only when a light is only_after_dark. A city centre is close enough.
 location:
@@ -35,7 +35,8 @@ cameras:
         min_seconds: 1
         clear_seconds: 5
       # Someone walking in through the wicket gate. Left and right are as seen
-      # standing on the first point and looking towards the second.
+      # standing on the first point and looking towards the second, and a direction
+      # names the side somebody comes from.
       - kind: line
         id: wicket
         points: [[0.75, 0.40], [0.75, 0.90]]

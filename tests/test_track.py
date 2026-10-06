@@ -6,7 +6,7 @@ import pytest
 
 from pihome_vision.config import ObjectClass
 from pihome_vision.detect import Detection
-from pihome_vision.track import EDGE, MAX_AGE, MAX_STEP, Tracker, footing
+from pihome_vision.track import EDGE, MAX_AGE, MAX_STEP, Track, Tracker, footing
 
 WIDTH, HEIGHT = 1000, 500
 
@@ -32,6 +32,25 @@ def test_a_box_hanging_off_the_frame_stands_just_inside_its_edge() -> None:
         EDGE,
         1.0 - EDGE,
     )
+
+
+def test_a_track_keeps_its_box_cut_to_the_frame() -> None:
+    tracker = Tracker()
+
+    (first,) = tracker.update([Detection(100, 400, 40, 80, 0.9, "person")], WIDTH, HEIGHT, 0.0)
+    assert first.box == (0.1, 0.8, 0.14, 0.96)
+
+    # Walking towards the camera, their feet go out of view.
+    (moved,) = tracker.update([Detection(110, 450, 40, 80, 0.9, "person")], WIDTH, HEIGHT, 0.1)
+    assert moved.id == first.id
+    assert moved.box == (0.11, 0.9, 0.15, 1.0)
+    assert moved.extent == moved.box
+
+
+def test_a_track_made_without_a_box_is_its_position() -> None:
+    track = Track(1, "person", (0.3, 0.4), 0.0)
+
+    assert track.extent == (0.3, 0.4, 0.3, 0.4)
 
 
 def test_an_object_keeps_its_id_as_it_moves() -> None:
