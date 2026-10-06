@@ -163,6 +163,11 @@ class Watcher:
         """The zones occupied right now."""
         return frozenset(zone.trigger.id for zone in self._zones if zone.active)
 
+    @property
+    def tracks(self) -> list[Track]:
+        """Everything followed as of the last frame, for drawing."""
+        return self._tracker.tracks
+
     def update(
         self, detections: Sequence[Detection], width: int, height: int, now: float
     ) -> list[Event]:

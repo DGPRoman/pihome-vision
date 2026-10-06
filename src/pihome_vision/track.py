@@ -77,6 +77,11 @@ class Tracker:
         self._tracks: dict[int, Track] = {}
         self._next_id = 1
 
+    @property
+    def tracks(self) -> list[Track]:
+        """Every track as of the last update."""
+        return list(self._tracks.values())
+
     def update(
         self, detections: Sequence[Detection], width: int, height: int, now: float
     ) -> list[Track]:
