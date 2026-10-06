@@ -19,6 +19,7 @@ from pihome_vision import __main__, camera, detect, gui
 from pihome_vision.config import Camera, load_config
 from pihome_vision.detect import Detection, Frame
 from pihome_vision.sketch import ENTER, ESCAPE
+from tests import fake_ffmpeg
 from tests.conftest import CAMERA_PASSWORD, EXAMPLE_CONFIG, Plan
 
 #: A click at a pixel, a key, the window closed from its title bar, or nothing until
@@ -363,16 +364,18 @@ def test_snapshot_takes_the_last_frame_of_its_first_second(
     plan: Plan, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(__main__, "SNAPSHOT_SECONDS", 0.2)
-    monkeypatch.setattr(camera, "FFMPEG", plan({"frames": 100, "interval": 0.01, "then": "hang"}))
+    run = {"from": 100, "frames": 100, "interval": 0.01, "then": "hang"}
+    monkeypatch.setattr(camera, "FFMPEG", plan(run))
     path = tmp_path / "gate.png"
 
     assert __main__.main(["snapshot", str(path)]) == 0
 
     saved = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
     assert saved is not None
-    # Frame n is filled with n. How many arrive in the time depends on the machine,
-    # but the first, which may be half drawn, is not the one kept.
-    assert int(saved[0, 0]) > 1
+    # Each frame is a little brighter than the one before. How many arrive in the time
+    # depends on the machine, but the first, which may be half drawn, is not the one kept.
+    first = camera.to_bgr(fake_ffmpeg.frame(100), fake_ffmpeg.WIDTH, fake_ffmpeg.HEIGHT)
+    assert int(saved[0, 0]) > int(cv2.cvtColor(first, cv2.COLOR_BGR2GRAY)[0, 0])
 
 
 @pytest.mark.usefixtures("environment")
