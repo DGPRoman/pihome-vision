@@ -10,6 +10,7 @@ lines. Everything that is not a secret lives in ``vision.yaml`` instead — see
 from __future__ import annotations
 
 import ipaddress
+import os
 import re
 from pathlib import Path
 from typing import Final
@@ -37,6 +38,9 @@ _REJECTED_KEY_MARKERS: Final = (
     "replace_me",
     "yourkeyhere",
 )
+
+#: Where ``vision.yaml`` is unless the environment says otherwise.
+DEFAULT_CONFIG_PATH: Final = Path("config/vision.yaml")
 
 CAMERA_SCHEMES: Final = frozenset({"rtsp", "rtsps", "http", "https"})
 _LOCAL_CAMERA = re.compile(r"cam:\d+")
@@ -91,7 +95,7 @@ class Settings(BaseSettings):
     #: and why SECURITY.md says how to keep it.
     hub_key: SecretStr
     #: Everything that is not a secret.
-    config_path: Path = Path("config/vision.yaml")
+    config_path: Path = DEFAULT_CONFIG_PATH
 
     @field_validator("camera_url")
     @classmethod
@@ -174,3 +178,13 @@ def render_settings_error(exc: ValidationError) -> str:
         lines.append(f"  {name}: {message}")
     lines += ["", "Every variable is described in .env.example."]
     return "\n".join(lines)
+
+
+def config_path_from_environment() -> Path:
+    """Where ``vision.yaml`` is, for a command that needs it but none of the secrets.
+
+    Reads the same variable :class:`Settings` would. A ``.env`` file is not consulted:
+    it exists for development runs of the service, and holds the secrets this avoids.
+    """
+    override = os.environ.get(f"{ENV_PREFIX}CONFIG_PATH", "")
+    return Path(override) if override else DEFAULT_CONFIG_PATH

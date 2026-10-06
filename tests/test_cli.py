@@ -2,10 +2,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import cv2
+import numpy as np
+import numpy.typing as npt
 import pytest
 
-from pihome_vision import __version__
+from pihome_vision import __version__, detect
 from pihome_vision.__main__ import EXIT_CONFIGURATION_ERROR, main
+from pihome_vision.detect import Detection
 from tests.conftest import CAMERA_PASSWORD, HUB_KEY
 
 
@@ -73,3 +77,66 @@ def test_a_dotenv_in_the_working_directory_is_read(
     Path(".env").write_text(f"PIHOME_VISION_HUB_KEY={HUB_KEY}\n", encoding="utf-8")
 
     assert main(["validate"]) == 0
+
+
+@pytest.fixture
+def image(tmp_path: Path) -> Path:
+    path = tmp_path / "yard.png"
+    cv2.imwrite(str(path), np.zeros((90, 160, 3), dtype=np.uint8))
+    return path
+
+
+class _StubDetector:
+    def __init__(self, path: Path, **_: object) -> None:
+        self.path = path
+
+    def detect(self, frame: npt.NDArray[np.uint8]) -> list[Detection]:
+        assert frame.shape == (90, 160, 3)
+        return [
+            Detection(10, 20, 30, 40, 0.61, "vehicle"),
+            Detection(100, 10, 20, 60, 0.88, "person"),
+        ]
+
+
+def test_detect_lists_what_the_model_found(
+    environment: Path,
+    image: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(detect, "Detector", _StubDetector)
+
+    assert main(["detect", str(image)]) == 0
+
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[0].startswith(f"{image}: 160x90, ")
+    assert lines[0].endswith(", 2 found")
+    assert lines[1:] == ["  person   0.88 at 110,40", "  vehicle  0.61 at 25,40"]
+
+
+@pytest.mark.usefixtures("environment")
+def test_detect_without_a_model_exits_2(image: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    assert main(["detect", str(image)]) == EXIT_CONFIGURATION_ERROR
+    assert "docs/models.md" in capsys.readouterr().err
+
+
+@pytest.mark.usefixtures("environment")
+def test_detect_needs_no_secrets(
+    image: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    for name in ("CAMERA_URL", "HUB_URL", "HUB_KEY"):
+        monkeypatch.delenv(f"PIHOME_VISION_{name}")
+    monkeypatch.setattr(detect, "Detector", _StubDetector)
+
+    assert main(["detect", str(image)]) == 0
+
+
+@pytest.mark.usefixtures("environment")
+def test_detect_says_when_the_file_is_not_an_image(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    text = tmp_path / "notes.txt"
+    text.write_text("not a picture", encoding="utf-8")
+
+    assert main(["detect", str(text)]) == 1
+    assert "not an image" in capsys.readouterr().err

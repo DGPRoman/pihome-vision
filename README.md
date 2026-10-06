@@ -27,6 +27,16 @@ Secrets come from the environment, and everything else from `vision.yaml`:
 password left out. A problem in either exits with status 2, naming each variable or
 field that is wrong.
 
+## The model
+
+No model comes with this repository, and each has its own licence.
+[docs/models.md](docs/models.md) says which ones work, where to get one, and how to try it
+on a photo before pointing it at the camera:
+
+```console
+$ pihome-vision detect photo.jpg
+```
+
 ## Development
 
 See [CONTRIBUTING.md](CONTRIBUTING.md). [SECURITY.md](SECURITY.md) says what the service
