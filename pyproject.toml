@@ -1,0 +1,116 @@
+[build-system]
+requires = ["hatchling==1.32.4"]
+build-backend = "hatchling.build"
+
+[project]
+name = "pihome-vision"
+version = "0.1.0"
+description = "Watches a camera for people and vehicles and reports zones and lines to pihome-hub"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+# 3.12, not the hub's 3.11: NumPy 2.5 has left 3.11 behind, and nothing this runs on
+# needs it — a desktop, or a small always-on PC with a current distribution. The
+# Raspberry Pi that pinned the hub to 3.11 is too small to run a detector at all.
+requires-python = ">=3.12"
+authors = [{ name = "Roman Pelenychko" }]
+keywords = ["opencv", "object-detection", "rtsp", "home-automation", "smart-home"]
+classifiers = [
+  "Development Status :: 2 - Pre-Alpha",
+  "Environment :: No Input/Output (Daemon)",
+  "Intended Audience :: End Users/Desktop",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+  "Topic :: Home Automation",
+  "Topic :: Multimedia :: Video :: Capture",
+]
+
+# Exact pins, not ranges: this is a deployed application, not a library, and it runs
+# unattended for months on a machine provisioned once. Reproducible installs matter
+# more than dependency flexibility.
+dependencies = []
+
+[project.optional-dependencies]
+# OpenCV comes in one of two builds that install the same cv2 module and so cannot
+# share an environment. The service needs no window and takes the headless one; the
+# tools that draw zones and show the live picture need HighGUI, which only the other
+# has. Exactly one of these is installed anywhere — see requirements/.
+headless = [
+  "opencv-python-headless==5.0.0.93",
+]
+gui = [
+  "opencv-python==5.0.0.93",
+]
+dev = [
+  "mypy==2.4.0",
+  "pytest==9.1.1",
+  "ruff==0.16.10",
+]
+
+[project.scripts]
+pihome-vision = "pihome_vision.__main__:main"
+
+[project.urls]
+Homepage = "https://github.com/DGPRoman/pihome-vision"
+Issues = "https://github.com/DGPRoman/pihome-vision/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/pihome_vision"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+  "A",     # flake8-builtins
+  "ANN",   # flake8-annotations
+  "ASYNC", # flake8-async
+  "B",     # flake8-bugbear
+  "C4",    # flake8-comprehensions
+  "E",     # pycodestyle errors
+  "F",     # pyflakes
+  "I",     # isort
+  "N",     # pep8-naming
+  "PL",    # pylint
+  "PT",    # flake8-pytest-style
+  "RET",   # flake8-return
+  "RUF",   # ruff-specific
+  "S",     # flake8-bandit
+  "SIM",   # flake8-simplify
+  "T20",   # flake8-print
+  "TID",   # flake8-tidy-imports
+  "UP",    # pyupgrade
+  "W",     # pycodestyle warnings
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Assertions are the point of a test suite, and its fixtures necessarily contain
+# literal (synthetic) credentials. Literal values are a test's specification.
+"tests/**" = ["S101", "S105", "S106", "S107", "PLR0913", "PLR2004"]
+
+[tool.ruff.lint.flake8-tidy-imports]
+ban-relative-imports = "all"
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_unreachable = true
+enable_error_code = ["ignore-without-code", "redundant-expr", "truthy-bool"]
+files = ["src", "tests"]
+
+[tool.uv]
+# The lockfiles are only reproducible against the resolver that produced them:
+# different uv versions annotate a resolution differently. Moving it is deliberate:
+# bump this line and run requirements/refresh.sh in the same commit.
+required-version = "==0.12.10"
+
+[tool.pytest.ini_options]
+minversion = "9.0"
+testpaths = ["tests"]
+addopts = "-ra --strict-markers --strict-config"
+xfail_strict = true
+filterwarnings = ["error"]
