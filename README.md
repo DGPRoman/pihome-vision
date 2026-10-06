@@ -54,6 +54,19 @@ arrive, and runs the model on one of them. When it cannot connect it names the l
 reason, such as a refused connection, no answer or a wrong password, and exits with
 status 1.
 
+## Running
+
+`pihome-vision run` watches the camera and switches the lights until it is stopped. It
+logs each trigger as it changes and each light as it is switched, and once a minute
+says how many frames arrived, how many the model looked at and how long that took. With
+`motion_threshold` above 0, a picture that has hardly changed is not shown to the model
+again, for up to five seconds.
+
+SIGTERM or Ctrl-C switches off every light it switched on, and then it exits. A camera
+that stops sending frames lets its zones come clear and its lights go off in the usual
+time. A configuration it cannot run with, including a model that will not load, exits
+with status 2. Any other failure exits with status 1.
+
 ## The model
 
 No model comes with this repository, and each has its own licence.

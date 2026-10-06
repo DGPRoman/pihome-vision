@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import sys
 from pathlib import Path
 
 import cv2
@@ -206,3 +208,16 @@ def test_check_exits_2_for_a_model_that_cannot_run(
 
     assert main(["check"]) == EXIT_CONFIGURATION_ERROR
     assert "docs/models.md" in capsys.readouterr().err
+
+
+def test_logs_are_stamped_unless_they_go_to_the_journal(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    with (tmp_path / "stderr").open("w") as stderr:
+        monkeypatch.setattr(sys, "stderr", stderr)
+        stat = os.fstat(stderr.fileno())
+
+        monkeypatch.setenv("JOURNAL_STREAM", "8:12345")
+        assert not __main__._logging_to_journal()
+        monkeypatch.setenv("JOURNAL_STREAM", f"{stat.st_dev}:{stat.st_ino}")
+        assert __main__._logging_to_journal()
