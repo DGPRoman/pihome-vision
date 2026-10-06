@@ -1,0 +1,48 @@
+# Secrets and machine-specific configuration.
+# Nothing matching these should ever reach a commit — see SECURITY.md.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Local configuration. Only the *.example.yaml templates are tracked; the real
+# files describe a specific camera and belong on the host that watches it.
+config/*.yaml
+config/*.yml
+!config/*.example.yaml
+!config/*.example.yml
+
+# Model weights. Each model carries its own license, so none is redistributed
+# here — README.md says where to get one.
+models/
+*.onnx
+
+# Frames. A snapshot of a camera shows somebody's house.
+*.jpg
+*.jpeg
+*.png
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+
+# Tooling caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Editors and OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
