@@ -1,0 +1,99 @@
+# Systemd unit for pihome-vision. See the deployment section of README.md.
+#
+# It assumes this layout:
+#   /opt/pihome-vision                 checkout, root-owned, with .venv and models/ inside
+#   /etc/pihome-vision/vision.env      the camera's address and the hub's key, mode 600
+#   /etc/pihome-vision/vision.yaml     zones, lines, lights and location, mode 600
+#
+# Change the paths if yours differ. Everything below them is deliberate.
+
+[Unit]
+Description=pihome-vision camera watcher
+Documentation=https://github.com/DGPRoman/pihome-vision
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# Not Type=simple: exec waits for the binary to be executed, so a missing venv is
+# a failed start rather than a service that reports active and then dies.
+Type=exec
+# An account made up for each run and gone after it. Nothing here outlives a run, so
+# there is nothing for a fixed account to own.
+DynamicUser=yes
+
+# A model path in vision.yaml that is not absolute is found from here: the example's
+# models/detector.onnx is the checkout's git-ignored models/ directory.
+WorkingDirectory=/opt/pihome-vision
+ExecStart=/opt/pihome-vision/.venv/bin/pihome-vision run
+
+# The camera's password and the hub's relay key. systemd reads the file as PID 1 and
+# passes the values in, so the service never needs access to the file itself.
+EnvironmentFile=/etc/pihome-vision/vision.env
+
+# Zones drawn over a driveway, and where the house is: not secret, but nobody else's
+# business. systemd copies the file in where only this run can read it, so it can stay
+# root's alone, like the environment file.
+LoadCredential=vision.yaml:/etc/pihome-vision/vision.yaml
+Environment=PIHOME_VISION_CONFIG_PATH=%d/vision.yaml
+
+Restart=on-failure
+RestartSec=10s
+# Exit code 2 means the configuration or the model cannot be used. Restarting cannot
+# fix that, and a crash loop would bury the one journal line explaining what to change.
+RestartPreventExitStatus=2
+
+# Lights this switched on are switched off on the way out, each one request of up to
+# five seconds to the hub, and then ffmpeg is given five to go. Leave room for both,
+# but not enough that a wedged process holds up a shutdown.
+TimeoutStopSec=30s
+# SIGTERM to the service alone, which closes ffmpeg itself once the lights are off.
+# The default sends it to ffmpeg as well, which then dies first and is taken for a
+# camera gone quiet. Anything left at the timeout is still killed.
+KillMode=mixed
+
+SyslogIdentifier=pihome-vision
+
+# -- Sandbox -----------------------------------------------------------------
+# Nothing is written anywhere: frames stay in memory and logs go to the journal.
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+# The camera is reached over the network. A webcam on this machine (cam:N) would need
+# PrivateDevices= removed and DeviceAllow=/dev/video0 rw with SupplementaryGroups=video.
+PrivateDevices=yes
+# PrivateUsers= is left out: a machine that is itself a container (LXC, say) often
+# cannot give a service a user namespace, and the service would not start at all.
+# DynamicUser= already gives it an account of its own.
+PrivateIPC=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectKernelLogs=yes
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+NoNewPrivileges=yes
+RemoveIPC=yes
+KeyringMode=private
+UMask=0077
+
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+# AF_NETLINK is not a route to the network: glibc opens one to enumerate local
+# interfaces during name resolution.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=multi-user.target

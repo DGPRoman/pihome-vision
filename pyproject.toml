@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "pihome-vision"
 version = "0.1.0"
-description = "Watches a camera for people and vehicles and reports zones and lines to pihome-hub"
+description = "Watches a camera for people and vehicles and switches lights through pihome-hub"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
@@ -16,7 +16,7 @@ requires-python = ">=3.12"
 authors = [{ name = "Roman Pelenychko" }]
 keywords = ["opencv", "object-detection", "rtsp", "home-automation", "smart-home"]
 classifiers = [
-  "Development Status :: 2 - Pre-Alpha",
+  "Development Status :: 3 - Alpha",
   "Environment :: No Input/Output (Daemon)",
   "Intended Audience :: End Users/Desktop",
   "License :: OSI Approved :: MIT License",

@@ -14,9 +14,6 @@ project with no commercial support and no bug bounty.
 
 ## What it sees, and what leaves the machine
 
-The project is at an early stage and not yet usable. What follows is how it is built,
-and each part is held to it as it lands.
-
 | Data | Where it goes |
 | --- | --- |
 | Camera frames | Held in memory, each replaced by the next. Never sent anywhere, and never written to disk except by `snapshot`, which saves one frame to a file the person running it names, readable only by them. `edit` and `preview` show frames in a window on the machine's own screen |
@@ -32,9 +29,13 @@ service runs.
 
 The hub has no key narrower than the one this needs. Its relay key reads and switches
 every relay, so whoever holds it can switch any light, or anything else on a relay, in
-the house. It cannot administer the hub's accounts. Keep it in one file, readable only
-by the account the service runs as. If it leaks, generate a new one in the hub's
-configuration and put it here, and every other client that uses it, at the same time.
+the house. It cannot administer the hub's accounts.
+
+Keep it in one file. `deploy/install.sh` makes that `/etc/pihome-vision/vision.env`,
+readable only by root: systemd reads it and hands the service the values, and the
+service runs as an account of its own with no access to the file. If the key leaks,
+generate a new one in the hub's configuration and put it here, and in every other
+client that uses it, at the same time.
 
 A key the hub turns down is not tried again until the service restarts. The hub counts
 failed keys per address, and a service retrying a stale key would soon have it refuse

@@ -5,8 +5,9 @@ chosen line, it switches a light on through
 [pihome-hub](https://github.com/DGPRoman/pihome-hub), and switches it off again a while
 after they have gone.
 
-**Status:** being built, not yet usable. The work is tracked in this repository's issues
-and on the [Smart Home](https://github.com/users/DGPRoman/projects/3) board.
+**Status:** usable with one camera, run by hand or as a systemd service. The work is
+tracked in this repository's issues and on the
+[Smart Home](https://github.com/users/DGPRoman/projects/3) board.
 
 ## How it fits with the hub
 
@@ -57,8 +58,8 @@ status 1.
 ## First setup
 
 Zones and lines are drawn on a desktop, with the build of OpenCV that opens windows.
-The service itself needs none, and on an always-on machine takes
-`requirements/headless.txt` instead.
+The service itself needs none, and is deployed with the headless build (see
+[deploying](#deploying)).
 
 ```console
 $ python3 -m venv .venv
@@ -108,6 +109,51 @@ SIGTERM or Ctrl-C switches off every light it switched on, and then it exits. A 
 that stops sending frames lets its zones come clear and its lights go off in the usual
 time. A configuration it cannot run with, including a model that will not load, exits
 with status 2. Any other failure exits with status 1.
+
+## Deploying
+
+`deploy/install.sh` installs the service on a machine that stays on, as a systemd unit
+that starts with it. It needs Python 3.12 or newer, `python3-venv` and ffmpeg (on
+Debian or Ubuntu, `apt install python3-venv ffmpeg`), and the checkout at
+`/opt/pihome-vision`:
+
+```console
+$ sudo git clone https://github.com/DGPRoman/pihome-vision /opt/pihome-vision
+$ sudo /opt/pihome-vision/deploy/install.sh
+```
+
+It installs from the hashed lockfile into `/opt/pihome-vision/.venv`, and the first
+time copies the examples to two files only root can read:
+
+| File | What |
+| --- | --- |
+| `/etc/pihome-vision/vision.env` | The camera's address with its password, the hub's address and its relay key |
+| `/etc/pihome-vision/vision.yaml` | The model, zones, lines, lights and location, as drawn with `edit` |
+
+The service is then enabled but not started, since neither file is yours yet. The model
+goes where `vision.yaml` says, relative to `/opt/pihome-vision`: the example's
+`models/detector.onnx` is the checkout's `models/` directory. Fill in both files, then:
+
+```console
+$ sudo systemctl start pihome-vision
+$ journalctl -u pihome-vision -f
+```
+
+The relay key is `PIHOME_RELAY_API_KEY` from the hub's own environment, in
+`/etc/pihome-hub/hub.env` on a hub installed by its installer. It switches every relay
+the hub has, so keep it in `vision.env` and nowhere else. [SECURITY.md](SECURITY.md)
+says what it can do and what to do if it leaks.
+
+To upgrade, `git pull` in the checkout and run the installer again. It keeps both
+files, restarts the service and watches it for ten seconds. A configuration or model it
+cannot use stops the service for good, with the reason in the journal: restarting
+would not change it.
+
+The unit runs as an account made up for each run. It can write nowhere, sees no
+devices, home directories or other processes, and holds no privileges; the network is
+the one thing it can reach. `vision.yaml` is handed to it by systemd, so it can stay
+root's. A local webcam (`cam:0`) needs the unit changed
+to let the device through; its comments say how.
 
 ## The model
 
