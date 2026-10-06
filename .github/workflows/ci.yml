@@ -62,6 +62,39 @@ jobs:
           fi
           echo "Nothing that must stay local is in the index."
 
+  deploy-files:
+    name: Deployment files
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Lint the install script
+        # ruff and mypy cannot read shell, so this is the only thing standing between an
+        # unquoted expansion and the machine it runs on as root.
+        run: shellcheck --severity=style deploy/install.sh
+
+      - name: Verify the unit with systemd-analyze
+        # A misspelled directive is silently ignored by systemd, and reported here as a
+        # warning that still exits 0, so the output, not the status, is the check. Stub
+        # the ExecStart path first: an absent binary is the one complaint expected on a
+        # runner, and stubbing it is cheaper than pattern-matching the message.
+        run: |
+          sudo install -d /opt/pihome-vision/.venv/bin
+          sudo ln -sf /usr/bin/true /opt/pihome-vision/.venv/bin/pihome-vision
+
+          output=$(systemd-analyze verify deploy/pihome-vision.service 2>&1)
+          if [ -n "$output" ]; then
+            echo "$output"
+            echo "::error file=deploy/pihome-vision.service::systemd-analyze reported a problem"
+            exit 1
+          fi
+          echo "Unit file is valid."
+
+      - name: Keep the sandbox at least as tight as the hub's
+        # The hub's unit scores 1.9. A threshold is in tenths, and anything above it
+        # fails the step, so a sandbox option dropped without thought is noticed.
+        run: systemd-analyze security --offline=yes --threshold=19 deploy/pihome-vision.service
+
   lockfile:
     name: Lockfile
     runs-on: ubuntu-latest
