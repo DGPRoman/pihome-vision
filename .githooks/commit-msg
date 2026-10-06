@@ -27,8 +27,8 @@ fail() {
 Expected:  type(optional-scope)!: description
 
   type         build chore ci docs feat fix perf refactor revert style test
-  scope        lowercase, optional - camera, detect, track, triggers, hub,
-               config, cli, deploy, docs, tests, ci
+  scope        lowercase, optional - camera, detect, track, triggers, lights,
+               hub, config, cli, deploy, docs, tests, ci
   !            append to the type or scope for a breaking change
   description  lower case, imperative, no trailing full stop
 
@@ -38,7 +38,7 @@ repo's habit does not change - only the subject line gains a prefix.
 
 Examples:
   fix(camera): reconnect when ffmpeg stalls without exiting
-  feat(config)!: name triggers by the hub sensor they report as
+  feat(lights)!: keep a light on for off_after_seconds after every crossing
   docs: say where to get a model and what its licence allows
 USAGE
     exit 1

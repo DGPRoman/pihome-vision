@@ -31,6 +31,9 @@ classifiers = [
 # unattended for months on a machine provisioned once. Reproducible installs matter
 # more than dependency flexibility.
 dependencies = [
+  # Sunrise and sunset, for lights that only come on after dark. The hub uses the
+  # same library for the same question, so the two agree on when night falls.
+  "astral==3.2",
   # Also what OpenCV hands frames back as; pinned here because this code uses it
   # directly, not only through cv2.
   "numpy==2.5.3",
