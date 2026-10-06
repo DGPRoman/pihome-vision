@@ -1,0 +1,57 @@
+name: Commit messages
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  conventional:
+    name: Conventional Commits
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out with enough history to see the whole branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+
+      # The same script developers run as a local hook, so the two cannot
+      # disagree about what a valid message is.
+      - name: Validate every commit in this pull request
+        env:
+          # Commit SHAs rather than anything a contributor writes, and they
+          # reach the shell through the environment rather than by being
+          # interpolated into it.
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          # Only ever the literal "dependabot[bot]" or empty — it comes from the
+          # event, not from the branch.
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+        run: |
+          status=0
+          for sha in $(git rev-list --no-merges "$BASE_SHA".."$HEAD_SHA"); do
+            # Dependabot capitalises the description — "build: Bump the python
+            # group" — and offers no setting for it. The rule is for messages
+            # somebody writes; rejecting a machine's is a red check every Monday
+            # that nobody can act on, which teaches people to ignore the check.
+            #
+            # The commit's own author, and the pull request's: a branch can claim
+            # any author name it likes, so on its own that would be a way to opt
+            # out of the rule by typing a name.
+            if [ "$PR_AUTHOR" = "dependabot[bot]" ] &&
+               [ "$(git log -1 --format=%an "$sha")" = "dependabot[bot]" ]; then
+              printf 'skip  %s\n' "$(git log -1 --format='%h %s' "$sha")"
+              continue
+            fi
+
+            git log -1 --format=%B "$sha" > "$RUNNER_TEMP/message"
+            if .githooks/commit-msg "$RUNNER_TEMP/message"; then
+              printf 'ok    %s\n' "$(git log -1 --format='%h %s' "$sha")"
+            else
+              printf 'FAIL  %s\n' "$(git log -1 --format='%h %s' "$sha")"
+              status=1
+            fi
+          done
+          exit "$status"
