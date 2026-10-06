@@ -348,6 +348,13 @@ class Camera:
             self._changed.notify_all()
         self._thread.join()
 
+    @property
+    def frames_received(self) -> int:
+        """Frames read since :meth:`start`, across every reconnection. The newest frame
+        has this number."""
+        with self._changed:
+            return self._number
+
     def next_frame(self, after: int, timeout: float) -> tuple[int, Frame] | None:
         """The newest frame numbered above ``after``, with its number, or ``None`` if
         none arrives within ``timeout`` seconds."""

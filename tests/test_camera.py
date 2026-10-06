@@ -246,7 +246,10 @@ class TestCamera:
         try:
             first = source.next_frame(0, timeout=5)
             assert first is not None
-            time.sleep(0.3)  # the other nine arrive while this reader is busy
+            # The other nine arrive while this reader is busy.
+            deadline = time.monotonic() + 5
+            while source.frames_received < 10 and time.monotonic() < deadline:
+                time.sleep(0.01)
             newest = source.next_frame(first[0], timeout=5)
         finally:
             source.stop()
