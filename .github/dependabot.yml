@@ -1,0 +1,25 @@
+# What tells us a dependency has moved.
+#
+# Dependabot rather than a scheduled workflow for actions: GitHub Actions may not
+# create pull requests in this account's repositories, and Dependabot, a separate
+# service, can. Grouped and weekly, so a security update is noticed among the rest.
+#
+# Actions only. requirements/*.txt are a solved dependency graph from `uv pip
+# compile`, and Dependabot moves packages one at a time, which is not a sound way
+# to change one. .github/workflows/dependencies.yml re-solves the whole graph each
+# week and reports what moved instead.
+
+version: 2
+
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: ci
+    labels: ["chore"]

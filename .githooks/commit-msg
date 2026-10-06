@@ -1,0 +1,83 @@
+#!/bin/sh
+#
+# Validate a commit message against the Conventional Commits grammar this repo
+# uses. Deliberately one script rather than a linter from a package registry:
+# this repo has no Node toolchain, and the same file is the local hook and the
+# check CI runs, so the two cannot drift apart.
+#
+# Enable locally, once per clone:
+#
+#     git config core.hooksPath .githooks
+#
+# Exits 0 on a valid message, 1 with an explanation otherwise.
+
+set -eu
+
+msg_file="${1:?usage: commit-msg <file containing the message>}"
+subject="$(sed -n '1p' "$msg_file")"
+second="$(sed -n '2p' "$msg_file")"
+
+TYPES='build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test'
+MAX_SUBJECT=72
+
+fail() {
+    printf '\ncommit-msg: %s\n\n' "$1" >&2
+    printf '  subject: %s\n\n' "$subject" >&2
+    cat >&2 <<'USAGE'
+Expected:  type(optional-scope)!: description
+
+  type         build chore ci docs feat fix perf refactor revert style test
+  scope        lowercase, optional - camera, detect, track, triggers, hub,
+               config, cli, deploy, docs, tests, ci
+  !            append to the type or scope for a breaking change
+  description  lower case, imperative, no trailing full stop
+
+A body is expected for anything that is not self-evident: what changed, and why
+it is right. Separate it from the subject with one blank line. That part of this
+repo's habit does not change - only the subject line gains a prefix.
+
+Examples:
+  fix(camera): reconnect when ffmpeg stalls without exiting
+  feat(config)!: name triggers by the hub sensor they report as
+  docs: say where to get a model and what its licence allows
+USAGE
+    exit 1
+}
+
+# Messages git writes or rewrites itself are not ours to judge.
+case "$subject" in
+    'Merge '*|'Revert "'*|'fixup!'*|'squash!'*|'amend!'*) exit 0 ;;
+esac
+
+# An empty or comment-only first line means the commit is being aborted.
+case "$subject" in
+    '#'*|'') exit 0 ;;
+esac
+
+printf '%s' "$subject" | grep -Eq "^($TYPES)(\([a-z0-9][a-z0-9._-]*\))?!?: .+$" \
+    || fail 'the subject does not match "type(scope): description"'
+
+if [ "${#subject}" -gt "$MAX_SUBJECT" ]; then
+    fail "the subject is ${#subject} characters; keep it within $MAX_SUBJECT"
+fi
+
+case "$subject" in
+    *.) fail 'the subject ends with a full stop' ;;
+esac
+
+description="${subject#*: }"
+case "$description" in
+    [A-Z]*)
+        # A leading capital is usually a sentence, but an identifier or an
+        # acronym is not - only complain when the first word looks like a word.
+        if printf '%s' "$description" | grep -Eq '^[A-Z][a-z]+([ ]|$)'; then
+            fail 'the description starts with a capital; keep it lower case'
+        fi
+        ;;
+esac
+
+if [ -n "$second" ]; then
+    fail 'separate the subject and the body with one blank line'
+fi
+
+exit 0

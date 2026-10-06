@@ -1,0 +1,130 @@
+# Weekly: is anything in requirements/ behind what the index offers?
+#
+# Dependabot cannot answer this. requirements/*.txt are produced by `uv pip
+# compile`, which writes a solved dependency graph, and Dependabot updates
+# packages one at a time; moving one member of a solved graph without the rest
+# produces a lockfile that need not install anywhere. The only sound way to move
+# a solved graph is to solve it again, which is what this does.
+#
+# It reports rather than proposes. GitHub Actions is not permitted to create pull
+# requests in this account's repositories, so a job that opened a branch would
+# fail every week. Issues it may open, and an issue saying which packages moved is
+# the part a person actually needs; the branch is `requirements/refresh.sh
+# --upgrade` and takes a second.
+
+name: Dependencies
+
+on:
+  schedule:
+    # Monday morning, an hour after Dependabot's own run, so the two do not
+    # arrive together.
+    - cron: "0 8 * * 1"
+  workflow_dispatch:
+
+# Only what it needs: read the code, and file what it found.
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: dependencies
+  cancel-in-progress: false
+
+jobs:
+  outdated:
+    name: Re-solve the lockfiles
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+
+      - name: Record the pins as they stand
+        run: cat requirements/dev.txt requirements/dev-gui.txt > "$RUNNER_TEMP/before.txt"
+
+      - name: Re-solve with every constraint free to move
+        # The same script a developer runs, with --upgrade. dev and dev-gui
+        # together hold every package the other two do, so one comparison of the
+        # pair covers all four.
+        run: |
+          requirements/refresh.sh --upgrade
+          cat requirements/dev.txt requirements/dev-gui.txt > "$RUNNER_TEMP/after.txt"
+
+      - name: Say what moved
+        id: diff
+        run: |
+          python3 - "$RUNNER_TEMP/before.txt" "$RUNNER_TEMP/after.txt" > "$RUNNER_TEMP/moved.md" <<'PY'
+          import re, sys
+
+          def pins(path):
+              found = {}
+              for line in open(path, encoding="utf-8"):
+                  match = re.match(r"^([A-Za-z0-9._-]+)==([^\s\\]+)", line)
+                  if match:
+                      found[match.group(1).lower()] = match.group(2)
+              return found
+
+          before, after = pins(sys.argv[1]), pins(sys.argv[2])
+          moved = sorted(n for n in before.keys() & after.keys() if before[n] != after[n])
+          added = sorted(after.keys() - before.keys())
+          removed = sorted(before.keys() - after.keys())
+
+          if not (moved or added or removed):
+              sys.exit(0)
+
+          print("| Package | Pinned | Available |")
+          print("| --- | --- | --- |")
+          for name in moved:
+              print(f"| `{name}` | {before[name]} | **{after[name]}** |")
+          for name in added:
+              print(f"| `{name}` | — | **{after[name]}** (new) |")
+          for name in removed:
+              print(f"| `{name}` | {before[name]} | — (no longer required) |")
+          PY
+
+          if [ -s "$RUNNER_TEMP/moved.md" ]; then
+            echo "stale=true" >> "$GITHUB_OUTPUT"
+            cat "$RUNNER_TEMP/moved.md" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "stale=false" >> "$GITHUB_OUTPUT"
+            echo "Every pin is already the newest the constraints allow." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: File or update the issue
+        if: steps.diff.outputs.stale == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TITLE: Python dependencies have moved on
+        run: |
+          {
+            echo "\`requirements/refresh.sh --upgrade\` would change these pins."
+            echo
+            cat "$RUNNER_TEMP/moved.md"
+            echo
+            echo "To take them:"
+            echo
+            echo '```sh'
+            echo 'git switch -c refresh-the-lockfiles'
+            echo 'requirements/refresh.sh --upgrade'
+            echo "git commit -am 'build: refresh the lockfiles'"
+            echo '```'
+            echo
+            echo "Re-solved rather than bumped one at a time: several of these pin each"
+            echo "other exactly, and moving one without the rest produces a lockfile that"
+            echo "installs nowhere."
+            echo
+            echo "_Rewritten by the Dependencies workflow each week. Close it to stop"
+            echo "hearing about the current set; the next change reopens the question._"
+          } > "$RUNNER_TEMP/body.md"
+
+          # One issue, rewritten, rather than a new one every Monday.
+          existing=$(gh issue list --state open --label chore --search "$TITLE in:title" \
+                       --json number,title \
+                       --jq "[.[] | select(.title == \"$TITLE\")] | .[0].number // empty")
+
+          if [ -n "$existing" ]; then
+            gh issue edit "$existing" --body-file "$RUNNER_TEMP/body.md"
+            echo "Updated #$existing"
+          else
+            gh issue create --title "$TITLE" --label chore --body-file "$RUNNER_TEMP/body.md"
+          fi
