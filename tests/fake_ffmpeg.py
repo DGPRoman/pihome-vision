@@ -8,6 +8,9 @@ one again once the list is used up. A run is an object with any of:
 ``frames``
     How many frames to write. The luma of frame ``n``, counting from 1 across the
     whole plan, is filled with ``n``, so a test can tell which frame it was handed.
+``from``
+    The number to give this run's first frame, and count on from. Luma under 16 is
+    black, so a test that tells frames apart by their brightness starts above it.
 ``interval``
     Seconds between frames.
 ``header``
@@ -50,6 +53,8 @@ def main() -> int:
     run = plan[min(started, len(plan) - 1)]
     numbered = plan_path.with_suffix(".numbered")
     number = int(numbered.read_text()) if numbered.exists() else 0
+    if "from" in run:
+        number = run["from"] - 1
 
     out = sys.stdout.buffer
     if run.get("garbage"):

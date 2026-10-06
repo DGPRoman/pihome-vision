@@ -25,6 +25,13 @@ EXIT_CONFIGURATION_ERROR: Final = 2
 #: How long ``check`` watches the camera to measure how fast frames arrive.
 CHECK_SECONDS = 3.0
 
+#: How long a picture is taken after connecting. The first frames from a camera can be
+#: half drawn, until its next key frame.
+SNAPSHOT_SECONDS = 1.0
+
+#: Who may read a saved frame: its owner. It is a picture of somebody's house.
+SNAPSHOT_MODE = 0o600
+
 if TYPE_CHECKING:
     from pihome_vision.detect import Detection, Frame
 
@@ -150,6 +157,129 @@ def _check(_: argparse.Namespace) -> int:
     return 0
 
 
+def _grab(url: str) -> Frame:
+    """One frame from the camera, after :data:`SNAPSHOT_SECONDS` of them.
+
+    Raises :class:`~pihome_vision.camera.StreamError` if there is not even one.
+    """
+    from pihome_vision import camera  # noqa: PLC0415
+
+    with camera.Stream(url) as stream:
+        raw = stream.read()
+        settled = time.monotonic() + SNAPSHOT_SECONDS
+        try:
+            while time.monotonic() < settled:
+                raw = stream.read()
+        except camera.StreamError:
+            pass  # a stream that ends now still gave a frame, and that will do
+    return camera.to_bgr(raw, stream.width, stream.height)
+
+
+def _snapshot(args: argparse.Namespace) -> int:
+    import cv2  # noqa: PLC0415
+
+    from pihome_vision import camera  # noqa: PLC0415
+
+    settings, _ = _load()
+    path: Path = args.path
+    try:
+        frame = _grab(settings.camera_url.get_secret_value())
+    except camera.StreamError as exc:
+        sys.stderr.write(f"pihome-vision: cannot read the camera: {exc}\n")
+        return 1
+    try:
+        encoded, data = cv2.imencode(path.suffix or ".jpg", frame)
+    except cv2.error:
+        encoded = False
+    if not encoded:
+        sys.stderr.write(f"pihome-vision: cannot save a picture as {path.suffix or path}\n")
+        return 1
+    try:
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, SNAPSHOT_MODE)
+        with os.fdopen(descriptor, "wb") as out:
+            out.write(data.tobytes())
+    except OSError as exc:
+        sys.stderr.write(f"pihome-vision: cannot write {path}: {exc.strerror}\n")
+        return 1
+    height, width = frame.shape[:2]
+    sys.stdout.write(f"{path}: {width}x{height}\n")
+    return 0
+
+
+def _edit(args: argparse.Namespace) -> int:
+    import cv2  # noqa: PLC0415
+    import numpy as np  # noqa: PLC0415
+
+    from pihome_vision import camera, gui, sketch  # noqa: PLC0415
+
+    if args.image is None:
+        settings, config = _load()
+        try:
+            frame = _grab(settings.camera_url.get_secret_value())
+        except camera.StreamError as exc:
+            sys.stderr.write(f"pihome-vision: cannot read the camera: {exc}\n")
+            return 1
+    else:
+        try:
+            config = load_config(config_path_from_environment())
+        except ConfigError as exc:
+            sys.stderr.write(f"pihome-vision: {exc}\n")
+            return EXIT_CONFIGURATION_ERROR
+        image = cv2.imread(str(args.image))
+        if image is None:
+            sys.stderr.write(f"pihome-vision: {args.image} is not an image OpenCV can read\n")
+            return 1
+        frame = np.asarray(image, dtype=np.uint8)
+
+    (watched,) = config.cameras
+    try:
+        drawn = gui.edit(frame, list(watched.triggers))
+    except gui.NoWindowError as exc:
+        sys.stderr.write(f"pihome-vision: {exc}\n")
+        return 1
+    if not drawn:
+        sys.stderr.write("pihome-vision: nothing is drawn, and a camera needs a trigger\n")
+        return 1
+    sys.stdout.write(f"# The cameras section for {config_path_from_environment()}:\n")
+    sys.stdout.write(sketch.fragment(watched, drawn))
+    for missing in sketch.dangling(config, drawn):
+        sys.stderr.write(f"pihome-vision: light {missing} is no longer drawn\n")
+    return 0
+
+
+def _preview(_: argparse.Namespace) -> int:
+    from pihome_vision import camera, detect, gui  # noqa: PLC0415
+
+    settings, config = _load()
+    model = config.model
+    try:
+        detector = detect.Detector(
+            model.path,
+            input_size=model.input_size,
+            confidence=model.confidence,
+            sha256=model.sha256,
+        )
+    except detect.ModelError as exc:
+        sys.stderr.write(f"pihome-vision: {exc}\n")
+        return EXIT_CONFIGURATION_ERROR
+    (watched,) = config.cameras
+    source = camera.Camera(settings.camera_url.get_secret_value(), fps=watched.fps)
+    source.start()
+    try:
+        gui.preview(watched, source, detector)
+    except gui.NoWindowError as exc:
+        sys.stderr.write(f"pihome-vision: {exc}\n")
+        return 1
+    except detect.ModelError as exc:
+        sys.stderr.write(f"pihome-vision: {exc}\n")
+        return EXIT_CONFIGURATION_ERROR
+    except KeyboardInterrupt:
+        pass
+    finally:
+        source.stop()
+    return 0
+
+
 def _logging_to_journal() -> bool:
     """Whether stderr is journald's, which stamps every line with the time itself.
 
@@ -231,6 +361,25 @@ def build_parser() -> argparse.ArgumentParser:
         help="watch the camera and switch the lights, until stopped",
     )
     run.set_defaults(handler=_run)
+    snapshot = commands.add_parser(
+        "snapshot",
+        help="save one frame from the camera to a file, readable only by you",
+    )
+    snapshot.add_argument("path", type=Path, help="where to save it: .jpg, .png or .webp")
+    snapshot.set_defaults(handler=_snapshot)
+    edit = commands.add_parser(
+        "edit",
+        help="draw zones and lines over a frame, and print them for vision.yaml (needs gui)",
+    )
+    edit.add_argument(
+        "--image", type=Path, help="draw over this picture rather than a frame from the camera"
+    )
+    edit.set_defaults(handler=_edit)
+    preview = commands.add_parser(
+        "preview",
+        help="show the live picture with what the model finds and each trigger (needs gui)",
+    )
+    preview.set_defaults(handler=_preview)
     return parser
 
 

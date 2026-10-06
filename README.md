@@ -54,6 +54,48 @@ arrive, and runs the model on one of them. When it cannot connect it names the l
 reason, such as a refused connection, no answer or a wrong password, and exits with
 status 1.
 
+## First setup
+
+Zones and lines are drawn on a desktop, with the build of OpenCV that opens windows.
+The service itself needs none, and on an always-on machine takes
+`requirements/headless.txt` instead.
+
+```console
+$ python3 -m venv .venv
+$ .venv/bin/pip install --require-hashes --requirement requirements/gui.txt
+$ .venv/bin/pip install --no-deps .
+$ cp .env.example .env
+$ cp config/vision.example.yaml config/vision.yaml
+```
+
+Put the camera's address, the hub's and its relay key in `.env`, and a model in
+`config/vision.yaml` (see [the model](#the-model)). Then, from the same directory:
+
+1. `pihome-vision check` connects to the camera and runs the model on one frame.
+2. `pihome-vision snapshot gate.jpg` saves a frame, readable only by you, to draw on
+   later or somewhere else. `edit` takes its own frame when not given one.
+3. `pihome-vision edit`, or `edit --image gate.jpg`, opens the frame with the zones
+   and lines already in `vision.yaml`. Draw on the ground, where people stand:
+
+   | Do | To |
+   | --- | --- |
+   | Click | Add a point |
+   | `z` | Close the points into a zone |
+   | `l` | Make the two points a line |
+   | Type, then Enter | Name it. Enter alone keeps the name offered |
+   | Backspace | Take back the last point, or with none, the last shape |
+   | Esc | Go back from naming to the points |
+   | `q` | Finish |
+
+   It prints the `cameras:` section with what was drawn. Paste it over the one in
+   `vision.yaml`, then set each trigger's classes and times, and each line's direction,
+   there. A light that names a trigger no longer drawn is pointed out.
+4. `pihome-vision validate` checks the result.
+5. `pihome-vision preview` shows the live picture with what the model finds, where
+   each object stands, which zones are occupied and which lines were just crossed.
+   Nothing is switched. `q` closes it.
+6. `pihome-vision run` starts switching the lights.
+
 ## Running
 
 `pihome-vision run` watches the camera and switches the lights until it is stopped. It
