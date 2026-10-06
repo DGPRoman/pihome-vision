@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import argparse
+import logging
+import os
 import sys
 import time
 from collections.abc import Callable, Sequence
@@ -148,6 +150,59 @@ def _check(_: argparse.Namespace) -> int:
     return 0
 
 
+def _logging_to_journal() -> bool:
+    """Whether stderr is journald's, which stamps every line with the time itself.
+
+    JOURNAL_STREAM alone is not enough: everything started from a desktop session
+    inherits it. It names the stream's device and inode, and only a process whose
+    stderr is still that stream is writing to the journal.
+    """
+    try:
+        stat = os.fstat(sys.stderr.fileno())
+    except (OSError, ValueError):
+        return False
+    return os.environ.get("JOURNAL_STREAM") == f"{stat.st_dev}:{stat.st_ino}"
+
+
+def _configure_logging() -> None:
+    stamp = "" if _logging_to_journal() else "%(asctime)s "
+    logging.basicConfig(
+        level=logging.INFO,
+        format=f"{stamp}%(levelname)s %(name)s: %(message)s",
+        stream=sys.stderr,
+    )
+
+
+def _run(_: argparse.Namespace) -> int:
+    # Imported here, as for check: OpenCV takes a moment to load.
+    from pihome_vision import camera, detect, service  # noqa: PLC0415
+    from pihome_vision.hub import Hub  # noqa: PLC0415
+    from pihome_vision.lights import Lights  # noqa: PLC0415
+    from pihome_vision.sun import Sun  # noqa: PLC0415
+
+    settings, config = _load()
+    _configure_logging()
+    model = config.model
+    try:
+        detector = detect.Detector(
+            model.path,
+            input_size=model.input_size,
+            confidence=model.confidence,
+            sha256=model.sha256,
+        )
+    except detect.ModelError as exc:
+        sys.stderr.write(f"pihome-vision: {exc}\n")
+        return EXIT_CONFIGURATION_ERROR
+    hub = Hub(settings.hub_url, settings.hub_key.get_secret_value())
+    sun = Sun(config.location) if config.location is not None else None
+    lights = Lights(config.lights, hub, darkness=sun)
+    # One camera: the configuration allows no more yet.
+    (watched,) = config.cameras
+    source = camera.Camera(settings.camera_url.get_secret_value(), fps=watched.fps)
+    pipeline = service.Pipeline(watched, source, detector, lights)
+    return service.serve(pipeline, source, lights)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="pihome-vision",
@@ -171,6 +226,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="connect to the camera, measure its frame rate and run the model on one frame",
     )
     check.set_defaults(handler=_check)
+    run = commands.add_parser(
+        "run",
+        help="watch the camera and switch the lights, until stopped",
+    )
+    run.set_defaults(handler=_run)
     return parser
 
 
