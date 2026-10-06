@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from pihome_vision.redact import MASK, mask_url
+from pihome_vision.redact import MASK, mask_url, scrub
+from tests.conftest import CAMERA_PASSWORD, CAMERA_URL
 
 
 @pytest.mark.parametrize(
@@ -41,3 +42,37 @@ def test_a_url_without_credentials_is_unchanged(url: str) -> None:
 def test_nothing_of_a_password_survives_a_malformed_url(url: str) -> None:
     assert "secret" not in mask_url(url)
     assert "cret" not in mask_url(url)
+
+
+def test_scrub_masks_a_url_that_ffmpeg_repeats() -> None:
+    said = f"Error opening input file {CAMERA_URL}."
+
+    assert (
+        scrub(said, CAMERA_URL)
+        == f"Error opening input file rtsp://{MASK}@192.168.1.50:554/stream2."
+    )
+
+
+def test_scrub_masks_the_password_on_its_own() -> None:
+    said = f"[rtsp @ 0x5a40] bad password {CAMERA_PASSWORD} for viewer"
+
+    assert CAMERA_PASSWORD not in scrub(said, CAMERA_URL)
+
+
+def test_scrub_masks_a_percent_encoded_password_in_both_spellings() -> None:
+    url = "rtsp://viewer:p%40ss-word@192.168.1.50/stream2"
+
+    assert "p@ss-word" not in scrub("tried p@ss-word", url)
+    assert "p%40ss-word" not in scrub("tried p%40ss-word", url)
+
+
+def test_scrub_masks_any_url_with_credentials_even_when_the_address_will_not_parse() -> None:
+    said = "Error opening input file rtsp://viewer:secret@192.168.1.50:port/stream2."
+
+    assert "secret" not in scrub(said, "rtsp://viewer:secret@192.168.1.50:port/stream2")
+
+
+def test_scrub_leaves_text_without_credentials_alone() -> None:
+    said = "[tcp @ 0x5a97] Connection to tcp://192.168.1.50:554 failed: Connection refused"
+
+    assert scrub(said, CAMERA_URL) == said

@@ -1,9 +1,15 @@
 from __future__ import annotations
 
+import json
 import os
+import sys
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 import pytest
+
+from tests import fake_ffmpeg
 
 #: A camera address whose credentials no output may contain.
 CAMERA_URL = "rtsp://viewer:hunter2-not-real@192.168.1.50:554/stream2"
@@ -33,3 +39,19 @@ def environment(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     monkeypatch.setenv("PIHOME_VISION_HUB_KEY", HUB_KEY)
     monkeypatch.setenv("PIHOME_VISION_CONFIG_PATH", str(config))
     return config
+
+
+#: Writes the stand-in ffmpeg's script, and returns the command that plays it.
+Plan = Callable[..., list[str]]
+
+
+@pytest.fixture
+def plan(tmp_path: Path) -> Plan:
+    """A stand-in for ffmpeg, playing the runs it is given: see tests/fake_ffmpeg.py."""
+
+    def write(*runs: dict[str, Any]) -> list[str]:
+        path = tmp_path / "plan.json"
+        path.write_text(json.dumps(runs), encoding="utf-8")
+        return [sys.executable, fake_ffmpeg.__file__, str(path)]
+
+    return write
