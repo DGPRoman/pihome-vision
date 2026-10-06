@@ -76,7 +76,9 @@ Put the camera's address, the hub's and its relay key in `.env`, and a model in
 2. `pihome-vision snapshot gate.jpg` saves a frame, readable only by you, to draw on
    later or somewhere else. `edit` takes its own frame when not given one.
 3. `pihome-vision edit`, or `edit --image gate.jpg`, opens the frame with the zones
-   and lines already in `vision.yaml`. Draw on the ground, where people stand:
+   and lines already in `vision.yaml`. Any part of somebody counts, a hand over a
+   zone's edge or a shoulder on a line, so draw them where people will show up in the
+   picture:
 
    | Do | To |
    | --- | --- |

@@ -5,10 +5,10 @@ the gate now is the one who was on the pavement a moment ago, and how long they 
 been in the driveway. :class:`Tracker` gives each object an id that it keeps from frame
 to frame, by matching every box to the nearest track of the same kind.
 
-A position is where an object stands: the middle of the bottom edge of its box, in
-fractions of the frame. Zones and lines are drawn on the ground, and the middle of a
-person's box is a metre above it. Fractions keep a camera's triggers where they were
-when its resolution changes.
+A track is followed by where it stands, the middle of the bottom edge of its box, and
+keeps the box itself for the triggers: any part of somebody counts as being in a zone
+or on a line. Both are in fractions of the frame, which keeps a camera's triggers where
+they were when its resolution changes.
 """
 
 from __future__ import annotations
@@ -23,6 +23,9 @@ from pihome_vision.detect import Detection
 
 #: ``x, y`` in fractions of the frame, from the top left.
 Position = tuple[float, float]
+
+#: ``left, top, right, bottom`` in fractions of the frame.
+Box = tuple[float, float, float, float]
 
 #: How far, in fractions of the frame, a box may be from where a track was expected to
 #: be and still be matched to it. Further than that, it is somebody else.
@@ -50,6 +53,17 @@ class Track:
     seen_at: float
     #: Smoothed, in fractions of the frame a second.
     velocity: tuple[float, float] = (0.0, 0.0)
+    #: The whole of it as last seen. None for a track made without one, which is then
+    #: no bigger than its position.
+    box: Box | None = None
+
+    @property
+    def extent(self) -> Box:
+        """Its box, or its position as a box with no size."""
+        if self.box is not None:
+            return self.box
+        x, y = self.position
+        return x, y, x, y
 
     def expected_at(self, now: float) -> Position:
         """Where it should be by ``now``, if it carried on as it was going."""
@@ -70,6 +84,21 @@ def footing(detection: Detection, width: int, height: int) -> Position:
     x = (detection.x + detection.width / 2) / width
     y = (detection.y + detection.height) / height
     return min(max(x, EDGE), 1.0 - EDGE), min(max(y, EDGE), 1.0 - EDGE)
+
+
+def outline(detection: Detection, width: int, height: int) -> Box:
+    """``detection``'s box in fractions of a ``width`` by ``height`` frame, cut to the
+    frame."""
+
+    def fit(value: float) -> float:
+        return min(max(value, 0.0), 1.0)
+
+    return (
+        fit(detection.x / width),
+        fit(detection.y / height),
+        fit((detection.x + detection.width) / width),
+        fit((detection.y + detection.height) / height),
+    )
 
 
 class Tracker:
@@ -110,13 +139,21 @@ class Tracker:
         for _, track_id, index in candidates:
             if track_id in matched or index in placed:
                 continue
-            self._move(self._tracks[track_id], positions[index], now)
+            track = self._tracks[track_id]
+            self._move(track, positions[index], now)
+            track.box = outline(detections[index], width, height)
             matched.add(track_id)
             placed.add(index)
 
         for index, detection in enumerate(detections):
             if index not in placed:
-                track = Track(self._next_id, detection.category, positions[index], now)
+                track = Track(
+                    self._next_id,
+                    detection.category,
+                    positions[index],
+                    now,
+                    box=outline(detection, width, height),
+                )
                 self._tracks[track.id] = track
                 self._next_id += 1
 

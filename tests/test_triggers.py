@@ -6,7 +6,15 @@ import pytest
 
 from pihome_vision.config import Camera, ObjectClass
 from pihome_vision.detect import Detection
-from pihome_vision.triggers import LINE_MARGIN, Event, Watcher, inside, offset
+from pihome_vision.triggers import (
+    LINE_MARGIN,
+    Event,
+    Watcher,
+    inside,
+    offset,
+    overlaps,
+    touches,
+)
 
 WIDTH, HEIGHT = 1000, 500
 
@@ -95,6 +103,39 @@ class TestGeometry:
         assert inside((0.75, 0.75), shape)
         assert not inside((0.75, 0.25), shape)
 
+    @pytest.mark.parametrize(
+        ("box", "expected"),
+        [
+            ((0.3, 0.3, 0.4, 0.4), True),  # wholly inside
+            ((0.5, 0.5, 0.7, 0.7), True),  # over a corner
+            ((0.1, 0.4, 0.3, 0.5), True),  # over an edge, no corner of either inside
+            ((0.0, 0.0, 1.0, 1.0), True),  # the square wholly inside the box
+            ((0.6, 0.3, 0.7, 0.4), True),  # touching an edge
+            ((0.7, 0.3, 0.8, 0.4), False),  # beside it
+        ],
+    )
+    def test_a_box_overlaps_a_square(
+        self, box: tuple[float, float, float, float], expected: bool
+    ) -> None:
+        square = [(0.2, 0.2), (0.6, 0.2), (0.6, 0.8), (0.2, 0.8)]
+
+        assert overlaps(box, square) is expected
+
+    @pytest.mark.parametrize(
+        ("box", "expected"),
+        [
+            ((0.4, 0.4, 0.6, 0.6), True),  # across it
+            ((0.45, 0.1, 0.55, 0.3), True),  # over its end
+            ((0.3, 0.4, 0.5, 0.6), True),  # just touching
+            ((0.3, 0.4, 0.45, 0.6), False),  # beside it
+            ((0.4, 0.85, 0.6, 0.95), False),  # beyond its end
+        ],
+    )
+    def test_a_box_touches_a_line(
+        self, box: tuple[float, float, float, float], expected: bool
+    ) -> None:
+        assert touches(box, (0.5, 0.8), (0.5, 0.2)) is expected
+
     def test_right_is_positive_seen_from_the_first_point(self) -> None:
         up = ((0.5, 0.8), (0.5, 0.2))
 
@@ -143,6 +184,15 @@ class TestZone:
         events = play(watcher(zone(polygon=corner, min_seconds=0)), still(x, 2, y))
 
         assert [event.change for event in events] == ["active"]
+
+    def test_an_arm_over_its_edge_is_in_it(self) -> None:
+        """Standing at 0.61, outside, with a box reaching back to 0.59, inside."""
+        events = play(watcher(zone(min_seconds=0)), still(0.61, 2))
+
+        assert [event.change for event in events] == ["active"]
+
+    def test_a_box_beside_it_is_not_in_it(self) -> None:
+        assert play(watcher(zone(min_seconds=0)), still(0.63, 5)) == []
 
     def test_a_person_the_detector_misses_for_a_moment_does_not_clear_it(self) -> None:
         frames = [*still(0.3, 10), *nobody(5), *still(0.3, 10)]
@@ -202,10 +252,47 @@ class TestLine:
 
         assert [event.change for event in events] == ["crossed"]
 
-    def test_stepping_onto_the_line_and_back_is_not_a_crossing(self) -> None:
-        frames = walk([0.30, 0.35, 0.40, 0.45, 0.50, 0.505, 0.45, 0.40])
+    def test_reaching_the_line_counts_once_however_long_they_stay(self) -> None:
+        """Any part of them on it is enough; staying there is not more."""
+        frames = walk([0.30, 0.35, 0.40, 0.45, *[0.49] * 10, 0.45, 0.40])
 
-        assert play(watcher(line()), frames) == []
+        events = play(watcher(line()), frames)
+
+        assert events == [Event("gate", "crossed", at(4))]
+
+    def test_a_shoulder_on_the_line_is_enough(self) -> None:
+        """Standing 0.015 short of it, with a box 0.02 either side of where they stand."""
+        frames = walk([0.40, 0.45, 0.485])
+
+        events = play(watcher(line()), frames)
+
+        assert events == [Event("gate", "crossed", at(2))]
+
+    def test_coming_back_after_leaving_it_counts_again(self) -> None:
+        clear = 0.5 - 0.02 - LINE_MARGIN - 0.01
+        frames = walk([0.40, 0.49, clear, 0.40, 0.49])
+
+        assert len(play(watcher(line()), frames)) == 2
+
+    @pytest.mark.parametrize(
+        ("direction", "xs", "counted"),
+        [
+            ("left_to_right", [0.40, 0.45, 0.49], True),
+            ("left_to_right", [0.60, 0.55, 0.51], False),
+            ("right_to_left", [0.60, 0.55, 0.51], True),
+            ("right_to_left", [0.40, 0.45, 0.49], False),
+        ],
+    )
+    def test_one_way_reaching_counts_by_the_side_they_came_from(
+        self, direction: str, xs: list[float], counted: bool
+    ) -> None:
+        events = play(watcher(line(direction=direction)), walk(xs))
+
+        assert len(events) == (1 if counted else 0)
+
+    def test_somebody_first_seen_on_it_counts_only_either_way(self) -> None:
+        assert len(play(watcher(line()), still(0.5, 3))) == 1
+        assert play(watcher(line(direction="left_to_right")), still(0.5, 3)) == []
 
     def test_there_and_back_is_two_crossings(self) -> None:
         frames = walk([*ACROSS, *BACK[1:]])
@@ -213,9 +300,16 @@ class TestLine:
         assert len(play(watcher(line()), frames)) == 2
 
     def test_passing_beyond_its_end_is_not_a_crossing(self) -> None:
-        frames = walk(ACROSS, y=0.9)
+        """Their box, 0.16 tall, is wholly below the line's lower end at 0.8."""
+        frames = walk(ACROSS, y=0.99)
 
         assert play(watcher(line()), frames) == []
+
+    def test_passing_beyond_its_end_with_a_head_over_it_counts(self) -> None:
+        """Standing at 0.9, they reach up to 0.74, past the end at 0.8."""
+        frames = walk(ACROSS, y=0.9)
+
+        assert play(watcher(line()), frames) == [Event("gate", "crossed", at(ACROSS_AT))]
 
     def test_a_class_it_does_not_watch_for_is_ignored(self) -> None:
         frames = walk(ACROSS, category="vehicle")

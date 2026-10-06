@@ -36,8 +36,9 @@ Point = tuple[Fraction, Fraction]
 #: bus or truck.
 ObjectClass = Literal["person", "vehicle"]
 
-#: Which way across a line counts. Left and right are as seen standing on the first
-#: point and looking towards the second.
+#: Which way to a line counts: ``left_to_right`` is somebody reaching it from its left.
+#: Left and right are as seen standing on the first point and looking towards the
+#: second.
 Direction = Literal["any", "left_to_right", "right_to_left"]
 
 #: Cameras watched at once. One for now; the configuration is a list already so that
@@ -87,7 +88,7 @@ class DetectionModel(_Strict):
 
 
 class ZoneTrigger(_Strict):
-    """Active while something of a chosen class is inside a polygon."""
+    """Active while any part of something of a chosen class is in a polygon."""
 
     kind: Literal["zone"]
     id: Slug
@@ -115,7 +116,8 @@ class ZoneTrigger(_Strict):
 
 
 class LineTrigger(_Strict):
-    """Fires at the moment something of a chosen class crosses a line."""
+    """Fires at the moment any part of something of a chosen class reaches a line, or
+    crosses it between one frame and the next."""
 
     kind: Literal["line"]
     id: Slug
