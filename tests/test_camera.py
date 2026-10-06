@@ -40,6 +40,16 @@ class TestArguments:
         assert "-rtsp_transport" not in arguments
         assert arguments[arguments.index("-i") + 1] == "http://192.168.1.50/video.mjpg"
 
+    @pytest.mark.parametrize("url", [CAMERA_URL, "http://192.168.1.50/video.mjpg"])
+    def test_a_network_stream_is_not_buffered(self, url: str) -> None:
+        arguments = ffmpeg_arguments(url)
+        given = arguments.index("-i")
+
+        assert arguments[arguments.index("-fflags") + 1] == "nobuffer"
+        assert arguments[arguments.index("-flags") + 1] == "low_delay"
+        assert arguments.index("-fflags") < given
+        assert arguments.index("-flags") < given
+
     def test_a_local_camera_is_its_video_device(self) -> None:
         arguments = ffmpeg_arguments("cam:2")
 

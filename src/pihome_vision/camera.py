@@ -138,6 +138,10 @@ def ffmpeg_arguments(source: str, *, fps: float | None = None) -> list[str]:
         if source.startswith(("rtsp://", "rtsps://")):
             # UDP loses packets on a busy network, and a lost packet is a smeared frame.
             arguments += ["-rtsp_transport", "tcp"]
+        # Hand each frame on as soon as it is decoded. By default ffmpeg buffers its
+        # input, which on a camera was measured at about 0.4 s: time somebody spends in
+        # the dark before anything here has seen them.
+        arguments += ["-fflags", "nobuffer", "-flags", "low_delay"]
         arguments += ["-i", source]
     # Even sides, because 4:2:0 shares one colour sample between four pixels and the
     # conversion to BGR needs whole blocks. Cropping a pixel costs nothing.
