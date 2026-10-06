@@ -6,7 +6,7 @@ import pytest
 
 from pihome_vision.config import ObjectClass
 from pihome_vision.detect import Detection
-from pihome_vision.track import MAX_AGE, MAX_STEP, Tracker, footing
+from pihome_vision.track import EDGE, MAX_AGE, MAX_STEP, Tracker, footing
 
 WIDTH, HEIGHT = 1000, 500
 
@@ -27,8 +27,11 @@ def test_a_position_is_the_same_at_any_resolution() -> None:
     assert small == large
 
 
-def test_a_box_hanging_off_the_frame_stands_on_its_edge() -> None:
-    assert footing(Detection(-30, 450, 40, 80, 0.9, "person"), WIDTH, HEIGHT) == (0.0, 1.0)
+def test_a_box_hanging_off_the_frame_stands_just_inside_its_edge() -> None:
+    assert footing(Detection(-30, 450, 40, 80, 0.9, "person"), WIDTH, HEIGHT) == (
+        EDGE,
+        1.0 - EDGE,
+    )
 
 
 def test_an_object_keeps_its_id_as_it_moves() -> None:

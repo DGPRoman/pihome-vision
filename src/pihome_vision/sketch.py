@@ -30,6 +30,11 @@ from pihome_vision.config import (
 #: Decimal places a point is kept to: a pixel or two on any camera there is.
 PRECISION: Final = 3
 
+#: How close to the frame's edge a click is put on it, in fractions. A zone meant to
+#: reach the edge would otherwise stop a few pixels short, and miss whoever is
+#: closest to the camera.
+SNAP: Final = 0.02
+
 #: Key codes as ``cv2.waitKey`` gives them.
 ENTER: Final = (10, 13)
 ESCAPE: Final = 27
@@ -46,13 +51,19 @@ Kind = Literal["zone", "line"]
 _CLASSES: Final = frozenset({"person", "vehicle"})
 
 
+def _snap(value: float) -> float:
+    if value < SNAP:
+        return 0.0
+    if value > 1.0 - SNAP:
+        return 1.0
+    return round(value, PRECISION)
+
+
 def fraction(x: float, y: float, width: int, height: int) -> Point:
     """A pixel of a ``width`` by ``height`` frame as fractions of it, rounded to
-    :data:`PRECISION` places and kept inside the frame."""
-    return (
-        round(min(max(x / width, 0.0), 1.0), PRECISION),
-        round(min(max(y / height, 0.0), 1.0), PRECISION),
-    )
+    :data:`PRECISION` places, and on the frame's edge if it is within :data:`SNAP`
+    of it."""
+    return _snap(x / width), _snap(y / height)
 
 
 class Sketch:

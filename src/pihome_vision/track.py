@@ -35,6 +35,9 @@ MAX_AGE: Final = 1.5
 #: How much of each new step goes into a track's velocity; the rest is its history.
 SMOOTHING: Final = 0.5
 
+#: How far inside the frame's edge an object cut off by it stands, in fractions.
+EDGE: Final = 0.001
+
 
 @dataclass(slots=True)
 class Track:
@@ -58,10 +61,15 @@ class Track:
 
 
 def footing(detection: Detection, width: int, height: int) -> Position:
-    """Where ``detection`` stands, in fractions of a ``width`` by ``height`` frame."""
+    """Where ``detection`` stands, in fractions of a ``width`` by ``height`` frame.
+
+    A box the frame cuts off, somebody close enough that their feet are out of view,
+    stands just inside the frame's edge rather than on it: a point on a zone's edge is
+    outside it, and a zone drawn to the edge of the frame should hold them.
+    """
     x = (detection.x + detection.width / 2) / width
     y = (detection.y + detection.height) / height
-    return min(max(x, 0.0), 1.0), min(max(y, 0.0), 1.0)
+    return min(max(x, EDGE), 1.0 - EDGE), min(max(y, EDGE), 1.0 - EDGE)
 
 
 class Tracker:

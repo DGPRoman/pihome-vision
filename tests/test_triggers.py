@@ -133,6 +133,17 @@ class TestZone:
 
         assert events == [Event("drive", "active", at(1))]
 
+    @pytest.mark.parametrize("edge", ["bottom", "right"])
+    def test_somebody_cut_off_by_the_frame_is_in_a_zone_drawn_to_its_edge(self, edge: str) -> None:
+        """Close to the camera, their feet are out of view."""
+        corner = [[0.5, 0.5], [1.0, 0.5], [1.0, 1.0], [0.5, 1.0]]
+        y = 1.3 if edge == "bottom" else 0.8
+        x = 1.2 if edge == "right" else 0.7
+
+        events = play(watcher(zone(polygon=corner, min_seconds=0)), still(x, 2, y))
+
+        assert [event.change for event in events] == ["active"]
+
     def test_a_person_the_detector_misses_for_a_moment_does_not_clear_it(self) -> None:
         frames = [*still(0.3, 10), *nobody(5), *still(0.3, 10)]
 

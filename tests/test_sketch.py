@@ -26,6 +26,13 @@ def test_a_pixel_becomes_a_rounded_fraction_inside_the_frame() -> None:
     assert fraction(-3, 800, 1280, 720) == (0.0, 1.0)
 
 
+def test_a_click_close_to_an_edge_is_on_it() -> None:
+    """A zone meant to reach the edge would otherwise stop a few pixels short of it."""
+    assert fraction(1270, 5, 1280, 720) == (1.0, 0.0)
+    assert fraction(20, 712, 1280, 720) == (0.0, 1.0)
+    assert fraction(1240, 30, 1280, 720) == (0.969, 0.042)
+
+
 def test_points_closed_with_z_and_named_are_a_zone() -> None:
     sketch = Sketch()
 
