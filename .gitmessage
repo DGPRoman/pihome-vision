@@ -1,0 +1,16 @@
+# type(scope): description
+#
+# Why this change is right. What it fixes or enables, and anything a reader
+# would otherwise have to reconstruct from the diff. Wrap at 72.
+#
+# type    build chore ci docs feat fix perf refactor revert style test
+# scope   camera detect track triggers hub config cli deploy docs tests ci
+#                                                             (optional)
+# !       after type or scope for a breaking change
+#
+# Subject: lower case, imperative, no full stop, within 72 characters.
+#
+# Footers, when they apply:
+#   Fixes: #123
+#   Refs: #123
+#   BREAKING CHANGE: what breaks and what to do instead
