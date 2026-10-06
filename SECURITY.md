@@ -22,7 +22,7 @@ and each part is held to it as it lands.
 | Camera frames | Held in memory, each replaced by the next. Never written to disk, never sent anywhere. The one exception is a command that saves a single frame to a file the person running it names, for drawing zones on |
 | What was detected | Used to decide each trigger and each light, then discarded. No history is kept |
 | A light's state | Switch this relay on, or off. That is all the hub learns |
-| The camera's address and password | Read from the environment. Removed from any URL before it reaches a log line or an error message |
+| The camera's address and password | Read from the environment and handed to ffmpeg, which reads the camera. Removed from any URL, and from anything ffmpeg says, before it reaches a log line or an error message. ffmpeg is given the address on its command line, which every account on the machine can read from `/proc`: run this where nobody else has an account, or mount `/proc` with `hidepid=invisible` |
 | The hub's relay key | Read from the environment, sent only to the hub, and never logged. Plain HTTP is refused unless the hub's address is a private one |
 
 There is no telemetry, and the model is a local file. Nothing is downloaded while the
