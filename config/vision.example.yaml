@@ -3,7 +3,9 @@
 # somebody's driveway and its location is where they live.
 #
 # Geometry is in fractions of the frame, from 0,0 at the top left to 1,1 at the
-# bottom right, so it stays put if the camera's resolution changes.
+# bottom right, so it stays put if the camera's resolution changes. A person or a
+# vehicle is where it stands, the middle of the bottom edge of its box, so draw zones
+# and lines on the ground.
 
 # Needed only when a light is only_after_dark. A city centre is close enough.
 location:
