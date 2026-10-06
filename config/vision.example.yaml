@@ -1,0 +1,48 @@
+# Copy to config/vision.yaml (or wherever PIHOME_VISION_CONFIG_PATH points) and
+# describe your own camera. The real file is git-ignored: its zones are drawn over
+# somebody's driveway and its location is where they live.
+#
+# Geometry is in fractions of the frame, from 0,0 at the top left to 1,1 at the
+# bottom right, so it stays put if the camera's resolution changes.
+
+# Needed only when a light is only_after_dark. A city centre is close enough.
+location:
+  latitude: 50.4501
+  longitude: 30.5234
+  timezone: Europe/Kyiv
+
+model:
+  # A YOLO-format ONNX file. None is shipped here; README.md says where to get one
+  # and what its licence allows.
+  path: models/detector.onnx
+  # sha256: <the file's SHA-256, to refuse any other file>
+  input_size: 640
+  confidence: 0.35
+
+cameras:
+  - id: gate
+    fps: 5
+    # Skip detection while the picture is still. 0 always detects.
+    motion_threshold: 0
+    triggers:
+      # Lit while a car stands on the drive, and for a while after it leaves.
+      - kind: zone
+        id: driveway
+        polygon: [[0.10, 0.55], [0.60, 0.55], [0.70, 1.00], [0.00, 1.00]]
+        classes: [vehicle]
+        min_seconds: 1
+        clear_seconds: 5
+      # Someone walking in through the wicket gate. Left and right are as seen
+      # standing on the first point and looking towards the second.
+      - kind: line
+        id: wicket
+        points: [[0.75, 0.40], [0.75, 0.90]]
+        direction: any
+        classes: [person]
+
+lights:
+  # A relay id on the hub, and the triggers that switch it on.
+  - relay: gate-light
+    triggers: [driveway, wicket]
+    off_after_seconds: 120
+    only_after_dark: true

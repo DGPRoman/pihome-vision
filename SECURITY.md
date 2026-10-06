@@ -1,8 +1,8 @@
 # Security
 
-This service watches a camera pointed at a house. Two things here are worth stealing:
-the camera's own credentials, which let anybody watch it, and the hub's sensor key,
-which lets anybody report motion and so switch whatever light a rule ties to it. The
+This service watches a camera pointed at a house and switches the house's lights. Two
+things here are worth stealing: the camera's own credentials, which let anybody watch
+it, and the hub's relay key, which lets anybody switch every relay the hub has. The
 notes below describe how the project keeps both, and the pictures, where they belong.
 
 ## Reporting a vulnerability
@@ -20,20 +20,29 @@ and each part is held to it as it lands.
 | Data | Where it goes |
 | --- | --- |
 | Camera frames | Held in memory, each replaced by the next. Never written to disk, never sent anywhere. The one exception is a command that saves a single frame to a file the person running it names, for drawing zones on |
-| What was detected | Used to decide each trigger, then discarded. No history is kept |
-| A trigger's state | `true` or `false`, sent to the hub as a sensor reading. That is all the hub learns |
+| What was detected | Used to decide each trigger and each light, then discarded. No history is kept |
+| A light's state | Switch this relay on, or off. That is all the hub learns |
 | The camera's address and password | Read from the environment. Removed from any URL before it reaches a log line or an error message |
-| The hub's sensor key | Read from the environment, sent only to the hub, and never logged |
+| The hub's relay key | Read from the environment, sent only to the hub, and never logged. Plain HTTP is refused unless the hub's address is a private one |
 
 There is no telemetry, and the model is a local file. Nothing is downloaded while the
 service runs.
 
 ## What a stolen key can do
 
-The hub's sensor key may only push readings. Its holder can report motion for any sensor
-the hub knows, and so light whatever a rule ties to one. It cannot read anything, switch
-a relay directly or administer the hub. A key that leaks is rotated in the hub's
-configuration and in this service's environment file together.
+The hub has no key narrower than the one this needs. Its relay key reads and switches
+every relay, so whoever holds it can switch any light, or anything else on a relay, in
+the house. It cannot administer the hub's accounts. Keep it in one file, readable only
+by the account the service runs as. If it leaks, generate a new one in the hub's
+configuration and put it here, and every other client that uses it, at the same time.
+
+## What the lights do when it is not running
+
+This service decides when a light goes off, so a light it switched on stays on until it
+says otherwise. Stopping the service, or shutting the machine down normally, switches
+off every light it switched on. A crash or a power cut cannot, and a light lit at that
+moment stays lit until somebody switches it off. A light that somebody else switched on
+is left alone, then and at any other time.
 
 ## Handling secrets in this repository
 
