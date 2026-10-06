@@ -7,18 +7,24 @@ import sys
 import time
 from collections.abc import Callable, Sequence
 from pathlib import Path
-from typing import Final
+from typing import TYPE_CHECKING, Final
 
 from pydantic import ValidationError
 
 from pihome_vision import __version__
-from pihome_vision.config import ConfigError, VisionConfig, load_config
+from pihome_vision.config import ConfigError, DetectionModel, VisionConfig, load_config
 from pihome_vision.redact import mask_url
 from pihome_vision.settings import Settings, config_path_from_environment, render_settings_error
 
 #: Started with a configuration it cannot use. A service manager should not retry:
 #: nothing will have changed by the next attempt.
 EXIT_CONFIGURATION_ERROR: Final = 2
+
+#: How long ``check`` watches the camera to measure how fast frames arrive.
+CHECK_SECONDS = 3.0
+
+if TYPE_CHECKING:
+    from pihome_vision.detect import Detection, Frame
 
 
 def _load() -> tuple[Settings, VisionConfig]:
@@ -54,12 +60,31 @@ def _validate(_: argparse.Namespace) -> int:
     return 0
 
 
+def _run_model(model: DetectionModel, frame: Frame) -> tuple[list[Detection], float]:
+    """What the model finds in ``frame``, and how many seconds that took.
+
+    Raises :class:`~pihome_vision.detect.ModelError` for a model that cannot run.
+    """
+    from pihome_vision.detect import Detector  # noqa: PLC0415
+
+    detector = Detector(
+        model.path,
+        input_size=model.input_size,
+        confidence=model.confidence,
+        sha256=model.sha256,
+    )
+    detector.detect(frame)  # the first run includes setting the network up
+    started = time.perf_counter()
+    found = detector.detect(frame)
+    return sorted(found, key=lambda d: -d.confidence), time.perf_counter() - started
+
+
 def _detect(args: argparse.Namespace) -> int:
     # Imported here: OpenCV takes a moment to load, and validate has no use for it.
     import cv2  # noqa: PLC0415
     import numpy as np  # noqa: PLC0415
 
-    from pihome_vision.detect import Detector, ModelError  # noqa: PLC0415
+    from pihome_vision.detect import ModelError  # noqa: PLC0415
 
     try:
         model = load_config(config_path_from_environment()).model
@@ -72,25 +97,54 @@ def _detect(args: argparse.Namespace) -> int:
         return 1
     frame = np.asarray(image, dtype=np.uint8)
     try:
-        detector = Detector(
-            model.path,
-            input_size=model.input_size,
-            confidence=model.confidence,
-            sha256=model.sha256,
-        )
-        detector.detect(frame)  # the first run includes setting the network up
-        started = time.perf_counter()
-        found = detector.detect(frame)
-        elapsed = time.perf_counter() - started
+        found, elapsed = _run_model(model, frame)
     except ModelError as exc:
         sys.stderr.write(f"pihome-vision: {exc}\n")
         return EXIT_CONFIGURATION_ERROR
     height, width = frame.shape[:2]
     out = sys.stdout
     out.write(f"{args.image}: {width}x{height}, {elapsed * 1000:.0f} ms, {len(found)} found\n")
-    for item in sorted(found, key=lambda d: -d.confidence):
+    for item in found:
         x, y = item.centre
         out.write(f"  {item.category:<8} {item.confidence:.2f} at {x:.0f},{y:.0f}\n")
+    return 0
+
+
+def _check(_: argparse.Namespace) -> int:
+    from pihome_vision import camera  # noqa: PLC0415
+    from pihome_vision.detect import ModelError  # noqa: PLC0415
+
+    settings, config = _load()
+    url = settings.camera_url.get_secret_value()
+    out = sys.stdout
+    out.write(f"camera   {mask_url(url)}\n")
+    out.flush()  # connecting can take a while; say to what in the meantime
+    started = time.monotonic()
+    try:
+        with camera.Stream(url) as stream:
+            connected = time.monotonic() - started
+            raw = stream.read()
+            first, frames = time.monotonic(), 0
+            while (elapsed := time.monotonic() - first) < CHECK_SECONDS:
+                raw = stream.read()
+                frames += 1
+    except camera.StreamError as exc:
+        sys.stderr.write(f"pihome-vision: cannot read the camera: {exc}\n")
+        return 1
+    says = f" (the stream says {stream.rate:.4g})" if stream.rate else ""
+    out.write(
+        f"  connected in {connected:.1f} s; {stream.width}x{stream.height}"
+        f" at {frames / elapsed:.1f} frames/s{says}\n"
+    )
+
+    out.write(f"model    {config.model.path}\n")
+    try:
+        found, took = _run_model(config.model, camera.to_bgr(raw, stream.width, stream.height))
+    except ModelError as exc:
+        sys.stderr.write(f"pihome-vision: {exc}\n")
+        return EXIT_CONFIGURATION_ERROR
+    seen = ", ".join(f"{item.category} {item.confidence:.2f}" for item in found)
+    out.write(f"  {took * 1000:.0f} ms a frame; found {seen or 'nothing'}\n")
     return 0
 
 
@@ -112,6 +166,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     detect.add_argument("image", type=Path, help="a photo, in any format OpenCV reads")
     detect.set_defaults(handler=_detect)
+    check = commands.add_parser(
+        "check",
+        help="connect to the camera, measure its frame rate and run the model on one frame",
+    )
+    check.set_defaults(handler=_check)
     return parser
 
 

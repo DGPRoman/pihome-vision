@@ -27,6 +27,18 @@ Secrets come from the environment, and everything else from `vision.yaml`:
 password left out. A problem in either exits with status 2, naming each variable or
 field that is wrong.
 
+## The camera
+
+ffmpeg reads the camera, so it has to be installed (`apt install ffmpeg` on Debian or
+Ubuntu). An `rtsp://`, `rtsps://`, `http://` or `https://` address works, and so does
+`cam:0` for the first local webcam. A stream that drops or goes quiet is reopened, with
+a wait that grows to 30 seconds between attempts.
+
+`pihome-vision check` connects once, says how big the frames are and how fast they
+arrive, and runs the model on one of them. When it cannot connect it names the likely
+reason, such as a refused connection, no answer or a wrong password, and exits with
+status 1.
+
 ## The model
 
 No model comes with this repository, and each has its own licence.

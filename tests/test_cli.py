@@ -7,10 +7,10 @@ import numpy as np
 import numpy.typing as npt
 import pytest
 
-from pihome_vision import __version__, detect
+from pihome_vision import __main__, __version__, camera, detect
 from pihome_vision.__main__ import EXIT_CONFIGURATION_ERROR, main
 from pihome_vision.detect import Detection
-from tests.conftest import CAMERA_PASSWORD, HUB_KEY
+from tests.conftest import CAMERA_PASSWORD, HUB_KEY, Plan
 
 
 def test_version_names_the_installed_package(capsys: pytest.CaptureFixture[str]) -> None:
@@ -140,3 +140,69 @@ def test_detect_says_when_the_file_is_not_an_image(
 
     assert main(["detect", str(text)]) == 1
     assert "not an image" in capsys.readouterr().err
+
+
+class _CheckDetector(_StubDetector):
+    def detect(self, frame: npt.NDArray[np.uint8]) -> list[Detection]:
+        assert frame.ndim == 3
+        return [Detection(1, 1, 2, 1, 0.74, "person")]
+
+
+@pytest.fixture
+def quick_check(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(__main__, "CHECK_SECONDS", 0.2)
+    monkeypatch.setattr(detect, "Detector", _CheckDetector)
+
+
+@pytest.mark.usefixtures("environment", "quick_check")
+def test_check_reports_the_camera_and_the_model(
+    plan: Plan, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(camera, "FFMPEG", plan({"frames": 100, "interval": 0.01}))
+
+    assert main(["check"]) == 0
+
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[0] == "camera   rtsp://***@192.168.1.50:554/stream2"
+    assert lines[1].startswith("  connected in ")
+    assert "; 4x2 at " in lines[1]
+    assert lines[1].endswith(" frames/s (the stream says 25)")
+    assert lines[2] == "model    models/detector.onnx"
+    assert lines[3].endswith(" ms a frame; found person 0.74")
+
+
+@pytest.mark.usefixtures("environment", "quick_check")
+def test_check_names_the_likely_cause_without_the_password(
+    plan: Plan, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(
+        camera,
+        "FFMPEG",
+        plan(
+            {
+                "header": False,
+                "stderr": "Error opening input file {url}.\n"
+                "Error opening input files: Server returned 401 Unauthorized",
+                "status": 1,
+            }
+        ),
+    )
+
+    assert main(["check"]) == 1
+
+    captured = capsys.readouterr()
+    assert "cannot read the camera: the camera turned down the user name or password" in (
+        captured.err
+    )
+    assert CAMERA_PASSWORD not in captured.out + captured.err
+
+
+@pytest.mark.usefixtures("environment")
+def test_check_exits_2_for_a_model_that_cannot_run(
+    plan: Plan, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(__main__, "CHECK_SECONDS", 0.2)
+    monkeypatch.setattr(camera, "FFMPEG", plan({"frames": 100, "interval": 0.01}))
+
+    assert main(["check"]) == EXIT_CONFIGURATION_ERROR
+    assert "docs/models.md" in capsys.readouterr().err
