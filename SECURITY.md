@@ -23,7 +23,7 @@ and each part is held to it as it lands.
 | What was detected | Used to decide each trigger and each light, then discarded. No history is kept |
 | A light's state | Switch this relay on, or off. That is all the hub learns |
 | The camera's address and password | Read from the environment and handed to ffmpeg, which reads the camera. Removed from any URL, and from anything ffmpeg says, before it reaches a log line or an error message. ffmpeg is given the address on its command line, which every account on the machine can read from `/proc`: run this where nobody else has an account, or mount `/proc` with `hidepid=invisible` |
-| The hub's relay key | Read from the environment, sent only to the hub, and never logged. Plain HTTP is refused unless the hub's address is a private one |
+| The hub's relay key | Read from the environment, sent only to the hub's address, and never logged. A redirect is not followed, and a proxy set in the environment is not used, since either would carry the key somewhere else. Plain HTTP is refused unless the hub's address is a private one |
 
 There is no telemetry, and the model is a local file. Nothing is downloaded while the
 service runs.
@@ -35,6 +35,10 @@ every relay, so whoever holds it can switch any light, or anything else on a rel
 the house. It cannot administer the hub's accounts. Keep it in one file, readable only
 by the account the service runs as. If it leaks, generate a new one in the hub's
 configuration and put it here, and every other client that uses it, at the same time.
+
+A key the hub turns down is not tried again until the service restarts. The hub counts
+failed keys per address, and a service retrying a stale key would soon have it refuse
+every client behind the same router.
 
 ## What the lights do when it is not running
 

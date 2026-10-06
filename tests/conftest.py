@@ -3,13 +3,14 @@ from __future__ import annotations
 import json
 import os
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from tests import fake_ffmpeg
+from tests import fake_ffmpeg, fake_hub
+from tests.fake_hub import FakeHub
 
 #: A camera address whose credentials no output may contain.
 CAMERA_URL = "rtsp://viewer:hunter2-not-real@192.168.1.50:554/stream2"
@@ -55,3 +56,14 @@ def plan(tmp_path: Path) -> Plan:
         return [sys.executable, fake_ffmpeg.__file__, str(path)]
 
     return write
+
+
+@pytest.fixture
+def hub() -> Iterator[FakeHub]:
+    """A hub with one relay, off, that takes HUB_KEY: see tests/fake_hub.py."""
+    fake = FakeHub(HUB_KEY, {"gate-light": False})
+    server = fake_hub.serve(fake)
+    yield fake
+    fake.released.set()
+    server.shutdown()
+    server.server_close()

@@ -27,6 +27,21 @@ Secrets come from the environment, and everything else from `vision.yaml`:
 password left out. A problem in either exits with status 2, naming each variable or
 field that is wrong.
 
+## The lights
+
+A light is on while any of its zones is occupied, and for `off_after_seconds` after the
+last of them comes clear or one of its lines is crossed. With `only_after_dark` it comes
+on only between sunset and sunrise at the configured location.
+
+Before switching a light on, the service reads it from the hub. One that is on already
+was switched on by somebody else, and is left alone. Before switching it off, the
+service reads it again, so a light somebody switched off in the meantime is not touched.
+A light the hub cannot be reached to switch on is given up after ten seconds rather than
+lit for an empty yard later.
+
+Switching a relay through the hub's API cancels any countdown one of the hub's own rules
+had running on it, so give a light to the hub's rules or to this service, not both.
+
 ## The camera
 
 ffmpeg reads the camera, so it has to be installed (`apt install ffmpeg` on Debian or

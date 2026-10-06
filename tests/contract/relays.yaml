@@ -1,0 +1,9 @@
+# The hub the contract tests run against. The mock backend switches nothing, so the
+# pins only have to be valid ones.
+relays:
+  - id: gate-light
+    pin: 17
+    label: "Gate light"
+  - id: porch-light
+    pin: 27
+    label: "Porch light"

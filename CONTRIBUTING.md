@@ -26,6 +26,12 @@ Before pushing:
 
 CI runs the same commands.
 
+The tests in `tests/contract` talk to a real hub and are skipped without one.
+`scripts/contract-test.sh` installs the hub from a checkout beside this one
+(`../pihome-hub`, or `PIHOME_HUB_DIR`), starts it with mock relays and a throwaway key,
+and runs them. CI does the same against a pinned hub commit, and weekly against the
+hub's `main`.
+
 ## Commit messages
 
 Subjects follow [Conventional Commits](https://www.conventionalcommits.org):
@@ -39,7 +45,7 @@ The body explains *why* the change is right rather than restating the diff.
 | Part | Rule |
 | --- | --- |
 | `type` | one of `build` `chore` `ci` `docs` `feat` `fix` `perf` `refactor` `revert` `style` `test` |
-| `scope` | optional, lower case: `camera` `detect` `track` `triggers` `hub` `config` `cli` `deploy` `docs` `tests` `ci` |
+| `scope` | optional, lower case: `camera` `detect` `track` `triggers` `lights` `hub` `config` `cli` `deploy` `docs` `tests` `ci` |
 | `!` | append to the type or scope for a breaking change, and explain it in a `BREAKING CHANGE:` footer |
 | `description` | lower case, imperative, no trailing full stop, whole subject within 72 characters |
 | body | separated by one blank line, wrapped at 72, present for anything not self-evident |
