@@ -41,6 +41,9 @@ ObjectClass = Literal["person", "vehicle"]
 #: second.
 Direction = Literal["any", "left_to_right", "right_to_left"]
 
+#: What runs the model: ONNX Runtime, or OpenCV's own DNN module.
+Engine = Literal["onnxruntime", "opencv"]
+
 #: Cameras watched at once. One for now; the configuration is a list already so that
 #: a second is a new entry rather than a new format.
 MAX_CAMERAS: Final = 1
@@ -91,8 +94,12 @@ class DetectionModel(_Strict):
     input_size: Annotated[int, Field(ge=160, le=1280, multiple_of=32)] | None = None
     #: Detections less certain than this are ignored.
     confidence: Annotated[float, Field(gt=0.0, lt=1.0)] = 0.35
-    #: Threads to run the model on. Unset, as many as there are CPUs, up to 8: more
-    #: make a 640 model no faster, only busier.
+    #: What runs the model. ONNX Runtime gives the same result as OpenCV's DNN module
+    #: in less time and on less CPU; OpenCV is there to compare with, and for a model
+    #: ONNX Runtime will not run.
+    engine: Engine = "onnxruntime"
+    #: Threads to run the model on. Unset, as many as there are CPUs, up to 4 for ONNX
+    #: Runtime and 8 for OpenCV: more make a 640 model no faster, only busier.
     threads: Annotated[int, Field(ge=1, le=256)] | None = None
 
 

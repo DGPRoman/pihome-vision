@@ -7,8 +7,8 @@ own, which this project cannot relicense and which you should read before runnin
 
 ## What it runs
 
-Any ONNX file that OpenCV's DNN module can load and that has one of the two output
-heads Ultralytics exports, with the 80 COCO classes:
+Any ONNX file that has one of the two output heads Ultralytics exports, with the 80
+COCO classes:
 
 | Head | Output shape | Exported by |
 | --- | --- | --- |
@@ -28,10 +28,28 @@ model exported to take any size (`dynamic=True`), and is 640 if left out. Set fo
 model of one size, it must be that size, and pihome-vision refuses to start if it is
 not.
 
-The model runs on as many threads as there are CPUs, up to 8. More make a 640 model no
-faster, and only keep more cores busy: on a 6-core, 12-thread desktop, 8 threads ran a
-frame in 35 ms and 12 in 36, but 12 used a third more CPU time. `model.threads` sets
-another number, fewer to leave room on a machine that does other work.
+## Engine
+
+The model runs in [ONNX Runtime](https://onnxruntime.ai), on the CPU. `model.engine:
+opencv` in `vision.yaml` runs it in OpenCV's DNN module instead, which gives the same
+boxes, to within a few thousandths of a pixel, in more time and on more CPU. YOLO26n at
+640x384, with the threads each runs on unless told otherwise:
+
+| Machine | Engine | Threads | Time a frame | CPU a frame |
+| --- | --- | --- | --- | --- |
+| 4-core desktop CPU from 2012, no AVX2 | ONNX Runtime | 4 | 29 ms | 0.19 s |
+| | OpenCV | 4 | 60 ms | 0.24 s |
+| 6-core, 12-thread desktop CPU from 2019 | ONNX Runtime | 4 | 23 ms | 0.18 s |
+| | OpenCV | 8 | 26 ms | 0.21 s |
+
+ONNX Runtime runs on as many threads as there are CPUs, up to 4, and OpenCV up to 8.
+More make a frame somewhat faster and keep many more cores busy: on the 6-core desktop, ONNX
+Runtime on 8 threads took 17 ms a frame, on twice the CPU time. `model.threads` sets
+another number: more for a quicker frame, fewer to leave room on a machine that does
+other work.
+
+A model quantized to 8-bit integers does not help on a CPU without AVX2: on the 2012
+one it ran slower than the original. Nor did OpenVINO there, at 42 ms a frame.
 
 ## Licences
 
@@ -77,7 +95,8 @@ through the picture. At `imgsz=384,640` the picture is the same 640x360 and the 
 24 rows. For a 4:3 camera, `imgsz=480,640`.
 
 Measured on a three-minute 2560x1440 night recording at ten frames a second, on a
-6-core desktop CPU with 8 threads, against frames marked by hand:
+6-core desktop CPU in OpenCV with 8 threads, against frames marked by hand. The engine
+changes the time, not what is found:
 
 | Model | Input | Frames with the person found | Time a frame | CPU a frame |
 | --- | --- | --- | --- | --- |
