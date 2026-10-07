@@ -14,6 +14,7 @@ Class numbers are COCO's. No model is shipped with this project: see docs/models
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
@@ -50,11 +51,29 @@ NMS_IOU: Final = 0.45
 #: 0.28 and 0.37 seconds of CPU time.
 MAX_THREADS: Final = 8
 
+#: The square a model exported to take any size is run at, unless the configuration
+#: says otherwise: the size YOLO models are trained at.
+DEFAULT_INPUT_SIZE: Final = 640
+
 #: The grey YOLO pads a letterboxed frame with, as it was trained.
 _PAD: Final = 114
 
 #: Columns in a row of an NMS-free head.
 _E2E_COLUMNS: Final = 6
+
+# Field numbers in ONNX's protobuf schema, onnx.proto, on the way from a model to the
+# shape of its graph's input, and the protobuf wire types that the way passes.
+_MODEL_GRAPH: Final = 7
+_GRAPH_INPUT: Final = 11
+_VALUE_TYPE: Final = 2
+_TYPE_TENSOR: Final = 1
+_TENSOR_SHAPE: Final = 2
+_SHAPE_DIM: Final = 1
+_DIM_VALUE: Final = 1
+_VARINT, _I64, _LEN, _I32 = 0, 1, 2, 5
+
+#: An image input: batch, channels, height, width.
+_IMAGE_DIMS: Final = 4
 
 
 class ModelError(Exception):
@@ -192,8 +211,8 @@ class Detector:
         self,
         path: Path,
         *,
-        input_size: int,
         confidence: float,
+        input_size: int | None = None,
         sha256: str | None = None,
         threads: int | None = None,
     ) -> None:
@@ -208,10 +227,13 @@ class Detector:
         except cv2.error as exc:
             msg = f"OpenCV cannot load {path} as an ONNX model: {_first_line(exc)}"
             raise ModelError(msg) from None
+        exported = exported_size(path)
+        self.input_size = _input_size(path, exported, input_size)
+        #: Whether the model's own file said what size it takes.
+        self._sized = exported is not None
         cv2.setNumThreads(
             threads if threads is not None else min(MAX_THREADS, cv2.getNumberOfCPUs())
         )
-        self.input_size = input_size
         self.confidence = confidence
         #: Whether the model has run on a frame. Until it has, a failure is most likely
         #: the configuration's; after, it is not, and restarting may well cure it.
@@ -233,13 +255,17 @@ class Detector:
                 # Not the configuration, which has worked: running short of memory,
                 # say. Reported as a failure, so a service manager restarts it.
                 raise
-            # By far the likeliest cause: the input size is fixed when a model is
-            # exported, and the configuration names another.
-            msg = (
-                f"the model would not run on a {self.input_size}x{self.input_size} input; "
-                f"input_size must be the size it was exported at ({_first_line(exc)})"
-            )
-            raise ModelError(msg) from None
+            size = f"a {self.input_size}x{self.input_size} input"
+            if self._sized:
+                msg = f"the model would not run on {size}, the size it was exported at"
+            else:
+                # By far the likeliest cause: the input size is fixed when a model is
+                # exported, and the configuration names another.
+                msg = (
+                    f"the model would not run on {size}; "
+                    f"input_size must be the size it was exported at"
+                )
+            raise ModelError(f"{msg} ({_first_line(exc)})") from None
         found = decode(np.asarray(output, dtype=np.float32), fit, self.confidence)
         self._ran = True
         return found
@@ -257,6 +283,109 @@ def load(model: DetectionModel) -> Detector:
         sha256=model.sha256,
         threads=model.threads,
     )
+
+
+def _input_size(path: Path, exported: tuple[int, int] | None, configured: int | None) -> int:
+    """The square to scale frames into for a model that takes ``exported`` images:
+    that size, or for a model that takes any, ``configured`` or the default.
+
+    Raises :class:`ModelError` for a model that is not square, or not the size
+    configured.
+    """
+    if exported is None:
+        return configured if configured is not None else DEFAULT_INPUT_SIZE
+    height, width = exported
+    if height != width:
+        msg = (
+            f"{path} takes {width}x{height} images, and only a square input can be run "
+            f"here; export it at one size, such as imgsz=640"
+        )
+        raise ModelError(msg)
+    if configured is not None and configured != height:
+        msg = (
+            f"{path} was exported to take {height}x{height} images, not the {configured} "
+            f"model.input_size sets; leave input_size out to use the model's own"
+        )
+        raise ModelError(msg)
+    return height
+
+
+def exported_size(path: Path) -> tuple[int, int] | None:
+    """The height and width of the images the ONNX model at ``path`` takes, or ``None``
+    if it takes any size or its file does not say.
+
+    OpenCV does not tell, so this reads the file for the shape of the graph's input:
+    batch, channels, height and width.
+    """
+    try:
+        graph = _part(memoryview(path.read_bytes()), _MODEL_GRAPH)
+        value_type = _part(_part(graph, _GRAPH_INPUT), _VALUE_TYPE)
+        shape = _part(_part(value_type, _TYPE_TENSOR), _TENSOR_SHAPE)
+        dims = [
+            dict(_fields(dim)).get(_DIM_VALUE)
+            for number, dim in _fields(shape)
+            if number == _SHAPE_DIM and isinstance(dim, memoryview)
+        ]
+    except (OSError, IndexError, LookupError, ValueError):
+        return None
+    if len(dims) != _IMAGE_DIMS:
+        return None
+    # A dimension of any size has a name in place of a number.
+    height, width = dims[2], dims[3]
+    if not isinstance(height, int) or not isinstance(width, int) or min(height, width) < 1:
+        return None
+    return height, width
+
+
+def _part(message: memoryview, number: int) -> memoryview:
+    """The first field ``number`` of a protobuf message that is itself a message.
+
+    Raises :class:`LookupError` if there is none.
+    """
+    for field, value in _fields(message):
+        if field == number and isinstance(value, memoryview):
+            return value
+    raise LookupError(number)
+
+
+def _fields(message: memoryview) -> Iterator[tuple[int, int | memoryview]]:
+    """The fields of a protobuf message, each a number and either an integer or the
+    bytes of a string or message. Fixed-width numbers, which nothing here needs, are
+    skipped.
+
+    Raises :class:`IndexError` or :class:`ValueError` for bytes that are not one.
+    """
+    at = 0
+    while at < len(message):
+        key, at = _varint(message, at)
+        number, wire = key >> 3, key & 7
+        if wire == _VARINT:
+            value, at = _varint(message, at)
+            yield number, value
+        elif wire == _LEN:
+            size, at = _varint(message, at)
+            if at + size > len(message):
+                msg = "a field runs past the end of its message"
+                raise ValueError(msg)
+            yield number, message[at : at + size]
+            at += size
+        elif wire in (_I64, _I32):
+            at += 8 if wire == _I64 else 4
+        else:
+            msg = f"wire type {wire} is not one ONNX uses"
+            raise ValueError(msg)
+
+
+def _varint(message: memoryview, at: int) -> tuple[int, int]:
+    """The variable-length integer at ``at``, and where the next field starts."""
+    value = shift = 0
+    while True:
+        byte = message[at]
+        at += 1
+        value |= (byte & 0x7F) << shift
+        if byte < 0x80:  # noqa: PLR2004 - the last byte has no continuation bit
+            return value, at
+        shift += 7
 
 
 def _first_line(exc: cv2.error) -> str:

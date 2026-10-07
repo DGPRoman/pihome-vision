@@ -58,6 +58,7 @@ def test_defaults_fill_what_is_left_out(document: dict[str, Any]) -> None:
     assert config.lights[0].off_after_seconds == 120.0
     assert config.lights[0].only_after_dark is False
     assert config.model.threads is None
+    assert config.model.input_size is None
 
 
 def test_an_unknown_key_is_refused_with_its_place(document: dict[str, Any]) -> None:
