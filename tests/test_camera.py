@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import logging
+import shutil
+import subprocess
 import threading
 import time
 from pathlib import Path
@@ -72,15 +74,34 @@ class TestArguments:
         assert arguments[-3:] == ["-f", "yuv4mpegpipe", "pipe:1"]
         assert "-nostdin" in arguments
 
-    def test_a_rate_is_set_by_filter(self) -> None:
+    def test_a_rate_selects_frames_and_passes_them_on_as_they_are(self) -> None:
         arguments = ffmpeg_arguments(CAMERA_URL, fps=2.5)
 
-        assert arguments[arguments.index("-vf") + 1].startswith("fps=2.5,")
+        assert arguments[arguments.index("-vf") + 1].startswith("select='")
+        assert "floor(t*2.5)" in arguments[arguments.index("-vf") + 1]
+        assert arguments[arguments.index("-fps_mode") + 1] == "passthrough"
+        assert arguments.index("-fps_mode") > arguments.index("-i")
 
     def test_without_a_rate_every_frame_comes_through(self) -> None:
         arguments = ffmpeg_arguments(CAMERA_URL)
 
-        assert "fps=" not in arguments[arguments.index("-vf") + 1]
+        assert "select" not in arguments[arguments.index("-vf") + 1]
+        assert "-fps_mode" not in arguments
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="needs a real ffmpeg")
+def test_a_rate_takes_the_first_frame_in_each_slot(tmp_path: Path) -> None:
+    """At 10 a second from 25: one frame in each tenth of a second, each once."""
+    clip = tmp_path / "numbered.y4m"
+    # Two seconds at 25 frames a second, each as bright as its number.
+    numbered = "color=black:size=64x64:rate=25,format=yuv420p,geq=lum='N':cb=128:cr=128"
+    making = ["ffmpeg", "-nostdin", "-loglevel", "error", "-f", "lavfi", "-i", numbered]
+    subprocess.run([*making, "-t", "2", str(clip)], check=True)  # noqa: S603 - fixed
+
+    with Stream(str(clip), fps=10, timeouts=QUICK) as stream:
+        numbers = [stream.read()[0] for _ in range(20)]
+
+    assert numbers == [0, 3, 5, 8, 10, 13, 15, 18, 20, 23, 25, 28, 30, 33, 35, 38, 40, 43, 45, 48]
 
 
 @pytest.mark.parametrize(

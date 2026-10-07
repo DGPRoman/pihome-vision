@@ -148,7 +148,14 @@ def ffmpeg_arguments(source: str, *, fps: float | None = None) -> list[str]:
     # conversion to BGR needs whole blocks. Cropping a pixel costs nothing.
     filters = ["crop=trunc(iw/2)*2:trunc(ih/2)*2"]
     if fps is not None:
-        filters.insert(0, f"fps={fps:g}")
+        # The first frame in each 1/fps of the camera's clock, handed on as it comes.
+        # ffmpeg's fps filter picks as many, but holds each until the next arrives
+        # to see which is nearer its slot: 40 ms more at 25 frames a second. A clock
+        # that goes back, as a camera's does when it restarts, starts again.
+        slot = f"floor(t*{fps:g})-floor(prev_selected_t*{fps:g})"
+        filters.insert(0, f"select='isnan(prev_selected_t)+lt(t,prev_selected_t)+gte({slot},1)'")
+        # Each selected frame once, rather than repeated up to the camera's rate.
+        arguments += ["-fps_mode", "passthrough"]
     return [
         *arguments,
         "-map",
