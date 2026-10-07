@@ -129,6 +129,10 @@ class StreamError(Exception):
         super().__init__(f"{failure.value} ({detail})" if detail else failure.value)
 
 
+#: Where a camera is reached over the network, so its frames are timed on arrival.
+_NETWORK_SCHEMES: Final = ("rtsp://", "rtsps://", "http://", "https://")
+
+
 def ffmpeg_arguments(source: str, *, fps: float | None = None) -> list[str]:
     """ffmpeg's arguments for reading ``source``, without the executable."""
     arguments = ["-hide_banner", "-nostdin", "-loglevel", "error"]
@@ -143,15 +147,21 @@ def ffmpeg_arguments(source: str, *, fps: float | None = None) -> list[str]:
             # spends in the dark before anything here has seen them. RTSP only: over
             # MPEG-TS, which some HTTP cameras send, it leaves ffmpeg decoding nothing.
             arguments += ["-fflags", "nobuffer"]
+        if source.startswith(_NETWORK_SCHEMES):
+            # Each frame timed by when it arrived, not by the camera's clock, which on
+            # one camera jumped a third of a second back about once a second: the rate
+            # below took each jump for a restart, and let 11 frames a second through
+            # for 10. Not a file, which arrives as fast as it can be read.
+            arguments += ["-use_wallclock_as_timestamps", "1"]
         arguments += ["-flags", "low_delay", "-i", source]
     # Even sides, because 4:2:0 shares one colour sample between four pixels and the
     # conversion to BGR needs whole blocks. Cropping a pixel costs nothing.
     filters = ["crop=trunc(iw/2)*2:trunc(ih/2)*2"]
     if fps is not None:
-        # The first frame in each 1/fps of the camera's clock, handed on as it comes.
-        # ffmpeg's fps filter picks as many, but holds each until the next arrives
-        # to see which is nearer its slot: 40 ms more at 25 frames a second. A clock
-        # that goes back, as a camera's does when it restarts, starts again.
+        # The first frame to arrive in each 1/fps, handed on as it comes. ffmpeg's
+        # fps filter picks as many, but holds each until the next arrives to see
+        # which is nearer its slot: 40 ms more at 25 frames a second. A clock that
+        # goes back, as this machine's can when it is set, starts again.
         slot = f"floor(t*{fps:g})-floor(prev_selected_t*{fps:g})"
         filters.insert(0, f"select='isnan(prev_selected_t)+lt(t,prev_selected_t)+gte({slot},1)'")
         # Each selected frame once, rather than repeated up to the camera's rate.
