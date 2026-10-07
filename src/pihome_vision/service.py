@@ -21,6 +21,7 @@ import cv2
 import numpy as np
 
 from pihome_vision import systemd
+from pihome_vision.camera import Picture
 from pihome_vision.config import EXIT_CONFIGURATION_ERROR, Camera
 from pihome_vision.detect import Detection, Frame, ModelError
 from pihome_vision.lights import Lights
@@ -45,9 +46,13 @@ STOP_GRACE: Final = 5.0
 #: watchdog asks for more.
 _TICK: Final = 0.5
 
-#: What a frame is shrunk to, grey, to tell whether it has changed. Small enough that
-#: sensor noise averages out and comparing costs nothing next to the model.
+#: What a frame's brightness is shrunk to, to tell whether it has changed. Small enough
+#: that sensor noise averages out and comparing costs nothing next to the model.
 _THUMBNAIL: Final = (160, 90)
+
+#: Grey levels in one step of brightness: :meth:`Picture.brightness` spans 16 to 235,
+#: and ``motion_threshold`` is in levels of grey from 0 to 255.
+_GREY_PER_STEP: Final = 255 / 219
 
 _log = logging.getLogger(__name__)
 
@@ -58,7 +63,7 @@ class Frames(Protocol):
     @property
     def frames_received(self) -> int: ...
 
-    def next_frame(self, after: int, timeout: float) -> tuple[int, Frame] | None: ...
+    def next_frame(self, after: int, timeout: float) -> tuple[int, Picture] | None: ...
 
 
 class Detects(Protocol):
@@ -79,15 +84,16 @@ class Stillness:
         self._reference: Frame | None = None
         self._at = 0.0
 
-    def changed(self, frame: Frame, now: float) -> bool:
+    def changed(self, picture: Picture, now: float) -> bool:
         if self._threshold <= 0:
             return True
-        thumbnail = cv2.resize(frame, _THUMBNAIL, interpolation=cv2.INTER_AREA)
-        small = np.asarray(cv2.cvtColor(thumbnail, cv2.COLOR_BGR2GRAY), dtype=np.uint8)
+        # From the brightness alone, a third of the work of shrinking the colour picture.
+        thumbnail = cv2.resize(picture.brightness(), _THUMBNAIL, interpolation=cv2.INTER_AREA)
+        small = np.asarray(thumbnail, dtype=np.uint8)
         if (
             self._reference is None
             or now - self._at >= self._max_skip
-            or float(cv2.absdiff(small, self._reference).mean()) >= self._threshold
+            or float(cv2.absdiff(small, self._reference).mean()) * _GREY_PER_STEP >= self._threshold
         ):
             self._reference, self._at = small, now
             return True
@@ -139,11 +145,11 @@ class Pipeline:
             # Nothing seen: tracks coast and expire, and zones come clear in time.
             detections: list[Detection] = []
         else:
-            self._last, frame = got
-            height, width = frame.shape[:2]
-            self._size = (width, height)
+            self._last, picture = got
+            self._size = (picture.width, picture.height)
             self._examined += 1
-            if self._stillness.changed(frame, now):
+            if self._stillness.changed(picture, now):
+                frame = picture.bgr()
                 started = time.perf_counter()
                 self._previous = self._detector.detect(frame)
                 self._inference += time.perf_counter() - started

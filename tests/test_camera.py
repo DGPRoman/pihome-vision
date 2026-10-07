@@ -14,6 +14,7 @@ from pihome_vision import camera
 from pihome_vision.camera import (
     Camera,
     Failure,
+    Picture,
     Stream,
     StreamError,
     Timeouts,
@@ -171,6 +172,23 @@ class TestStream:
         assert image.dtype == np.uint8
         assert image.flags.writeable
 
+    def test_a_pictures_brightness_is_the_first_plane(self) -> None:
+        picture = Picture(fake_ffmpeg.frame(200), fake_ffmpeg.WIDTH, fake_ffmpeg.HEIGHT)
+
+        brightness = picture.brightness()
+
+        assert brightness.shape == (fake_ffmpeg.HEIGHT, fake_ffmpeg.WIDTH)
+        assert (brightness == 200).all()
+
+    def test_a_bgr_image_makes_a_picture_of_itself(self) -> None:
+        image = np.zeros((4, 6, 3), dtype=np.uint8)
+        image[:, 2:] = (40, 120, 200)
+
+        picture = Picture.from_bgr(image)
+
+        assert (picture.width, picture.height) == (6, 4)
+        assert np.abs(picture.bgr().astype(int) - image).max() <= 2
+
     def test_a_refusal_is_explained_without_the_password(self, plan: Plan) -> None:
         command = plan(
             {
@@ -315,10 +333,9 @@ class TestCamera:
             source.stop()
 
         assert newest is not None
-        number, image = newest
+        number, picture = newest
         assert number == 10
-        expected = to_bgr(fake_ffmpeg.frame(10), fake_ffmpeg.WIDTH, fake_ffmpeg.HEIGHT)
-        assert np.array_equal(image, expected)
+        assert picture == Picture(fake_ffmpeg.frame(10), fake_ffmpeg.WIDTH, fake_ffmpeg.HEIGHT)
 
     def test_with_nothing_new_it_waits_then_says_so(self, plan: Plan) -> None:
         command = plan({"frames": 1, "then": "hang"})

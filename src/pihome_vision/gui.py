@@ -120,7 +120,8 @@ def preview(
         while True:
             got = frames.next_frame(last, 0.0)
             if got is not None:
-                last, frame = got
+                last, picture = got
+                frame = picture.bgr()
                 started = time.perf_counter()
                 detections = detector.detect(frame)
                 took = time.perf_counter() - started

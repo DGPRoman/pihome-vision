@@ -187,6 +187,31 @@ def to_bgr(raw: bytes, width: int, height: int) -> Frame:
     return np.asarray(cv2.cvtColor(planes, cv2.COLOR_YUV2BGR_I420), dtype=np.uint8)
 
 
+@dataclass(frozen=True)
+class Picture:
+    """A frame as ffmpeg sent it, converted to BGR only when :meth:`bgr` is called: a
+    frame that is not shown to the model need never be."""
+
+    raw: bytes
+    width: int
+    height: int
+
+    @classmethod
+    def from_bgr(cls, image: Frame) -> Self:
+        height, width = image.shape[:2]
+        planes = cv2.cvtColor(image, cv2.COLOR_BGR2YUV_I420)
+        return cls(planes.tobytes(), width, height)
+
+    def bgr(self) -> Frame:
+        return to_bgr(self.raw, self.width, self.height)
+
+    def brightness(self) -> Frame:
+        """How bright each pixel is, from 16 for black to 235 for white: the first of
+        ffmpeg's planes, read in place."""
+        plane = np.frombuffer(self.raw, dtype=np.uint8, count=self.width * self.height)
+        return plane.reshape(self.height, self.width)
+
+
 class Stream:
     """One run of ffmpeg: connected on construction, then read frame by frame.
 
@@ -385,7 +410,7 @@ class Camera:
         with self._changed:
             return self._number
 
-    def next_frame(self, after: int, timeout: float) -> tuple[int, Frame] | None:
+    def next_frame(self, after: int, timeout: float) -> tuple[int, Picture] | None:
         """The newest frame numbered above ``after``, with its number, or ``None`` if
         none arrives within ``timeout`` seconds."""
         with self._changed:
@@ -399,8 +424,7 @@ class Camera:
             if not arrived or self._latest is None or self._latest[0] <= after:
                 return None
             number, raw, width, height = self._latest
-        # Converted here rather than as frames arrive, so skipped frames cost nothing.
-        return number, to_bgr(raw, width, height)
+        return number, Picture(raw, width, height)
 
     def _run(self) -> None:
         first_backoff = min(1.0, self._timeouts.backoff)
