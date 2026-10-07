@@ -138,11 +138,12 @@ def ffmpeg_arguments(source: str, *, fps: float | None = None) -> list[str]:
         if source.startswith(("rtsp://", "rtsps://")):
             # UDP loses packets on a busy network, and a lost packet is a smeared frame.
             arguments += ["-rtsp_transport", "tcp"]
-        # Hand each frame on as soon as it is decoded. By default ffmpeg buffers its
-        # input, which on a camera was measured at about 0.4 s: time somebody spends in
-        # the dark before anything here has seen them.
-        arguments += ["-fflags", "nobuffer", "-flags", "low_delay"]
-        arguments += ["-i", source]
+            # Hand each frame on as soon as it arrives. By default ffmpeg buffers its
+            # input, which on a camera was measured at about 0.4 s: time somebody
+            # spends in the dark before anything here has seen them. RTSP only: over
+            # MPEG-TS, which some HTTP cameras send, it leaves ffmpeg decoding nothing.
+            arguments += ["-fflags", "nobuffer"]
+        arguments += ["-flags", "low_delay", "-i", source]
     # Even sides, because 4:2:0 shares one colour sample between four pixels and the
     # conversion to BGR needs whole blocks. Cropping a pixel costs nothing.
     filters = ["crop=trunc(iw/2)*2:trunc(ih/2)*2"]
@@ -225,6 +226,9 @@ class Stream:
 
     def read(self) -> bytes:
         """The next frame, in ffmpeg's 4:2:0 layout; :func:`to_bgr` converts it."""
+        if self._cancel.is_set():
+            # Before anything already read: a frame handed on now would go unwatched.
+            raise StreamError(Failure.ENDED, "stopped")
         deadline = time.monotonic() + self._stall_timeout
         marker = self._take_line(deadline, Failure.STALLED)
         if not marker.startswith(b"FRAME"):
@@ -280,11 +284,16 @@ class Stream:
         return data
 
     def _fill(self, deadline: float, failure: Failure) -> None:
-        while not select.select([self._stdout], [], [], _CANCEL_POLL)[0]:
+        # Looked at before every read, and not only while waiting for one: a camera
+        # that never pauses would otherwise never be stopped, and a frame that
+        # trickles in a few bytes at a time never counted as stalled.
+        while True:
             if self._cancel.is_set():
                 raise StreamError(Failure.ENDED, "stopped")
             if time.monotonic() >= deadline:
                 raise StreamError(failure)
+            if select.select([self._stdout], [], [], _CANCEL_POLL)[0]:
+                break
         chunk = os.read(self._stdout.fileno(), _READ_CHUNK)
         if not chunk:
             raise self._ended()

@@ -40,15 +40,21 @@ class TestArguments:
         assert "-rtsp_transport" not in arguments
         assert arguments[arguments.index("-i") + 1] == "http://192.168.1.50/video.mjpg"
 
-    @pytest.mark.parametrize("url", [CAMERA_URL, "http://192.168.1.50/video.mjpg"])
-    def test_a_network_stream_is_not_buffered(self, url: str) -> None:
-        arguments = ffmpeg_arguments(url)
+    def test_rtsp_is_not_buffered(self) -> None:
+        arguments = ffmpeg_arguments(CAMERA_URL)
         given = arguments.index("-i")
 
         assert arguments[arguments.index("-fflags") + 1] == "nobuffer"
         assert arguments[arguments.index("-flags") + 1] == "low_delay"
         assert arguments.index("-fflags") < given
         assert arguments.index("-flags") < given
+
+    def test_http_keeps_its_buffer(self) -> None:
+        """Without one, ffmpeg decodes nothing from MPEG-TS, which some cameras send."""
+        arguments = ffmpeg_arguments("http://192.168.1.50/video.ts")
+
+        assert "-fflags" not in arguments
+        assert arguments[arguments.index("-flags") + 1] == "low_delay"
 
     def test_a_local_camera_is_its_video_device(self) -> None:
         arguments = ffmpeg_arguments("cam:2")
@@ -202,6 +208,17 @@ class TestStream:
         assert raised.value.failure is Failure.NO_FFMPEG
         assert "apt install ffmpeg" in str(raised.value)
 
+    def test_cancelling_ends_reading_even_with_frames_waiting(self, plan: Plan) -> None:
+        """A camera that never pauses is still stopped."""
+        command = plan({"frames": 100_000, "interval": 0.001})
+        cancel = threading.Event()
+
+        with Stream(CAMERA_URL, command=command, timeouts=QUICK, cancel=cancel) as stream:
+            stream.read()
+            cancel.set()
+            with pytest.raises(StreamError, match="stopped"):
+                stream.read()
+
     def test_cancelling_ends_a_wait_for_the_camera(self, plan: Plan) -> None:
         command = plan({"header": False, "then": "hang"})
         cancel = threading.Event()
@@ -287,6 +304,17 @@ class TestCamera:
         source = Camera(CAMERA_URL, command=command, timeouts=Timeouts(open=30))
         source.start()
         time.sleep(0.2)
+        started = time.monotonic()
+
+        source.stop()
+
+        assert time.monotonic() - started < 2
+
+    def test_stopping_does_not_wait_for_a_camera_that_never_pauses(self, plan: Plan) -> None:
+        command = plan({"frames": 100_000, "interval": 0.001})
+        source = Camera(CAMERA_URL, command=command, timeouts=QUICK)
+        source.start()
+        assert source.next_frame(0, timeout=5) is not None
         started = time.monotonic()
 
         source.stop()
