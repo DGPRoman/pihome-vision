@@ -8,6 +8,7 @@ import time
 from collections.abc import Callable, Iterator
 from pathlib import Path
 
+import cv2
 import numpy as np
 import pytest
 
@@ -195,6 +196,20 @@ class SeesSomebody:
         return [SOMEBODY] if 30 <= brightness(frame) <= 120 else []
 
 
+class FailsLater(SeesSomebody):
+    """Runs on the first frame, and fails as OpenCV short of memory would on the next."""
+
+    def __init__(self, path: Path, **_: object) -> None:
+        self.ran = False
+
+    def detect(self, frame: Frame) -> list[Detection]:
+        if self.ran:
+            msg = "Insufficient memory"
+            raise cv2.error(msg)
+        self.ran = True
+        return []
+
+
 class Broken(SeesSomebody):
     def detect(self, frame: Frame) -> list[Detection]:
         msg = "the model would not run on a 640x640 input"
@@ -318,6 +333,19 @@ def test_a_model_that_will_not_run_exits_2(
         assert __main__.main(["run"]) == 2
 
     assert "would not run" in caplog.text
+
+
+def test_a_model_that_fails_after_running_exits_1_to_be_restarted(
+    started: Callable[..., None], caplog: pytest.LogCaptureFixture
+) -> None:
+    """Not the configuration: a service manager should try again."""
+    started({"frames": 100, "interval": 0.01, "then": "hang"}, detector=FailsLater)
+
+    with caplog.at_level(logging.ERROR):
+        assert __main__.main(["run"]) == 1
+
+    assert "the pipeline failed" in caplog.text
+    assert "Insufficient memory" in caplog.text
 
 
 def test_a_missing_model_exits_2_before_starting(

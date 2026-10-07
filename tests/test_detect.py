@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import cv2
 import numpy as np
 import numpy.typing as npt
 import pytest
@@ -176,3 +177,54 @@ class TestLoading:
 
         with pytest.raises(ModelError, match="cannot load"):
             Detector(path, input_size=640, confidence=0.35, sha256=file_sha256(path))
+
+
+class FakeNet:
+    """Stands in for a loaded network: runs ``works`` times, then fails as OpenCV does."""
+
+    def __init__(self, works: int) -> None:
+        self.works = works
+
+    def setInput(self, blob: object) -> None:  # noqa: N802 - OpenCV's name
+        pass
+
+    def forward(self) -> npt.NDArray[np.float32]:
+        if self.works == 0:
+            msg = "Insufficient memory"
+            raise cv2.error(msg)
+        self.works -= 1
+        return end_to_end((10, 10, 50, 90, 0.9, PERSON))
+
+
+@pytest.fixture
+def fake_model(tmp_path: Path) -> Path:
+    path = tmp_path / "detector.onnx"
+    path.write_bytes(b"a model")
+    return path
+
+
+class TestFailing:
+    FRAME = np.zeros((640, 640, 3), dtype=np.uint8)
+
+    def detector(self, path: Path, monkeypatch: pytest.MonkeyPatch, works: int) -> Detector:
+        net = FakeNet(works)
+        monkeypatch.setattr(cv2.dnn, "readNetFromONNX", lambda *_: net)
+        return Detector(path, input_size=640, confidence=0.35)
+
+    def test_a_model_that_will_not_run_at_all_is_the_configurations_fault(
+        self, fake_model: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        detector = self.detector(fake_model, monkeypatch, works=0)
+
+        with pytest.raises(ModelError, match="input_size must be the size it was exported at"):
+            detector.detect(self.FRAME)
+
+    def test_a_failure_after_it_has_run_is_not(
+        self, fake_model: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        detector = self.detector(fake_model, monkeypatch, works=1)
+
+        assert len(detector.detect(self.FRAME)) == 1
+        with pytest.raises(cv2.error, match="Insufficient memory") as raised:
+            detector.detect(self.FRAME)
+        assert not isinstance(raised.value, ModelError)

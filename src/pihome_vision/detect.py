@@ -193,15 +193,26 @@ class Detector:
             raise ModelError(msg) from None
         self.input_size = input_size
         self.confidence = confidence
+        #: Whether the model has run on a frame. Until it has, a failure is most likely
+        #: the configuration's; after, it is not, and restarting may well cure it.
+        self._ran = False
 
     def detect(self, frame: Frame) -> list[Detection]:
-        """The people and vehicles in ``frame``, a BGR image as OpenCV reads one."""
+        """The people and vehicles in ``frame``, a BGR image as OpenCV reads one.
+
+        Raises :class:`ModelError` if the model will not run on its first frame, and
+        whatever OpenCV raised for a failure after that.
+        """
         square, fit = letterbox(frame, self.input_size)
         blob = cv2.dnn.blobFromImage(square, 1 / 255.0, swapRB=True, crop=False)
         self._net.setInput(blob)
         try:
             output = self._net.forward()
         except cv2.error as exc:
+            if self._ran:
+                # Not the configuration, which has worked: running short of memory,
+                # say. Reported as a failure, so a service manager restarts it.
+                raise
             # By far the likeliest cause: the input size is fixed when a model is
             # exported, and the configuration names another.
             msg = (
@@ -209,7 +220,9 @@ class Detector:
                 f"input_size must be the size it was exported at ({_first_line(exc)})"
             )
             raise ModelError(msg) from None
-        return decode(np.asarray(output, dtype=np.float32), fit, self.confidence)
+        found = decode(np.asarray(output, dtype=np.float32), fit, self.confidence)
+        self._ran = True
+        return found
 
 
 def _first_line(exc: cv2.error) -> str:
