@@ -116,6 +116,38 @@ with status 2. Any other failure exits with status 1. Deployed as below, a pipel
 stops moving for 15 seconds, stuck in a model run say, is stopped the same way, with
 its lights switched off, and started again.
 
+## Tuning
+
+How soon a light comes on, and how often it misses somebody, depends mostly on these.
+
+**The camera's stream.** Most cameras send a main stream at full resolution and a
+lighter sub stream. Give the service the main one. The model sees a 640-wide picture
+either way, but one scaled down from the full frame is sharper and less noisy than the
+sub stream's own, at night above all: on one camera after dark, the person in view was
+found in 80-91% of the frames from the main stream and in 47-52% of those from the sub
+stream. Decoding the main stream costs more, about a third of a core for 2560x1440 at
+ten frames a second on a desktop CPU from 2012.
+
+**`fps`**, per camera. The frames the model looks at each second. Somebody who comes
+into view waits half the gap between two of them on average before the model sees them:
+100 ms at 5, 50 ms at 10. Each frame costs the model the same, so 10 take twice the CPU
+of 5. Only the newest frame is kept, so a model that cannot keep up skips the rest: the
+line logged once a minute then shows fewer frames examined than came from the camera.
+
+**`confidence`**, under `model`. Detections less certain than this are ignored. Lower
+finds somebody in more frames, in the dark especially, and lets more shadows and bushes
+through as people. `pihome-vision detect` prints the confidence of everything it finds,
+so try it on a few frames saved with `snapshot` by day and by night before changing it.
+
+**`motion_threshold`**, per camera. Above 0, a picture that has hardly changed is not
+shown to the model again for up to five seconds, which saves CPU while nothing moves.
+The change is averaged over the whole frame, so set too high it lets somebody small and
+slow at the edge of the picture wait out those five seconds.
+
+**`threads` and `engine`**, under `model`. Which engine runs the model, and on how many
+threads: [docs/models.md](docs/models.md#engine) compares them. So does the model's
+size, in [choosing a size](docs/models.md#choosing-a-size).
+
 ## Deploying
 
 `deploy/install.sh` installs the service on a machine that stays on, as a systemd unit
