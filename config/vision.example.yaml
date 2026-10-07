@@ -20,6 +20,8 @@ model:
   # sha256: <the file's SHA-256, to refuse any other file>
   input_size: 640
   confidence: 0.35
+  # Threads to run it on. Left out, as many as there are CPUs, up to 8.
+  # threads: 4
 
 cameras:
   - id: gate

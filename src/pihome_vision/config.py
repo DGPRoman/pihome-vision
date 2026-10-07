@@ -85,6 +85,9 @@ class DetectionModel(_Strict):
     input_size: Annotated[int, Field(ge=160, le=1280, multiple_of=32)] = 640
     #: Detections less certain than this are ignored.
     confidence: Annotated[float, Field(gt=0.0, lt=1.0)] = 0.35
+    #: Threads to run the model on. Unset, as many as there are CPUs, up to 8: more
+    #: make a 640 model no faster, only busier.
+    threads: Annotated[int, Field(ge=1, le=256)] | None = None
 
 
 class ZoneTrigger(_Strict):

@@ -57,6 +57,7 @@ def test_defaults_fill_what_is_left_out(document: dict[str, Any]) -> None:
     assert (zone.min_seconds, zone.clear_seconds) == (1.0, 5.0)
     assert config.lights[0].off_after_seconds == 120.0
     assert config.lights[0].only_after_dark is False
+    assert config.model.threads is None
 
 
 def test_an_unknown_key_is_refused_with_its_place(document: dict[str, Any]) -> None:
@@ -159,6 +160,15 @@ def test_the_model_input_must_be_a_size_it_can_take(document: dict[str, Any], si
     document["model"]["input_size"] = size
 
     assert "model.input_size" in refusal(document)
+
+
+@pytest.mark.parametrize("threads", [0, -1, 1000])
+def test_the_model_runs_on_a_number_of_threads_that_makes_sense(
+    document: dict[str, Any], threads: int
+) -> None:
+    document["model"]["threads"] = threads
+
+    assert "model.threads" in refusal(document)
 
 
 def test_a_missing_file_says_where_to_start(tmp_path: Path) -> None:

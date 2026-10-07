@@ -7,8 +7,10 @@ import numpy as np
 import numpy.typing as npt
 import pytest
 
+from pihome_vision.config import DetectionModel
 from pihome_vision.detect import (
     COCO_CLASSES,
+    MAX_THREADS,
     Detection,
     Detector,
     Letterbox,
@@ -16,6 +18,7 @@ from pihome_vision.detect import (
     decode,
     file_sha256,
     letterbox,
+    load,
 )
 
 PERSON, BICYCLE, CAR, CAT, TRUCK, DOG = 0, 1, 2, 15, 7, 16
@@ -228,3 +231,30 @@ class TestFailing:
         with pytest.raises(cv2.error, match="Insufficient memory") as raised:
             detector.detect(self.FRAME)
         assert not isinstance(raised.value, ModelError)
+
+
+class TestThreads:
+    @pytest.fixture
+    def pool(self, monkeypatch: pytest.MonkeyPatch) -> list[int]:
+        """The sizes OpenCV's thread pool is set to, on a machine with 12 CPUs."""
+        sizes: list[int] = []
+        monkeypatch.setattr(cv2.dnn, "readNetFromONNX", lambda *_: FakeNet(works=1))
+        monkeypatch.setattr(cv2, "getNumberOfCPUs", lambda: 12)
+        monkeypatch.setattr(cv2, "setNumThreads", sizes.append)
+        return sizes
+
+    def test_unless_told_it_runs_on_every_cpu_up_to_a_few(
+        self, fake_model: Path, pool: list[int], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        Detector(fake_model, input_size=640, confidence=0.35)
+        monkeypatch.setattr(cv2, "getNumberOfCPUs", lambda: 4)
+        Detector(fake_model, input_size=640, confidence=0.35)
+
+        assert pool == [MAX_THREADS, 4]
+
+    def test_the_configuration_says_how_many(self, fake_model: Path, pool: list[int]) -> None:
+        model = DetectionModel(path=fake_model, threads=12)
+
+        load(model)
+
+        assert pool == [12]
