@@ -76,3 +76,22 @@ def test_scrub_leaves_text_without_credentials_alone() -> None:
     said = "[tcp @ 0x5a97] Connection to tcp://192.168.1.50:554 failed: Connection refused"
 
     assert scrub(said, CAMERA_URL) == said
+
+
+AT_IN_PASSWORD = "rtsp://viewer:Summer@2024x@192.168.1.50:554/stream2"
+
+
+@pytest.mark.parametrize(
+    "said",
+    [
+        "Error opening input file {url}.",
+        "[in#0 @ 0x615f] Impossible to open '{url}'",
+        "{url}: Connection refused",
+    ],
+)
+def test_scrub_leaves_nothing_of_a_password_that_holds_an_at(said: str) -> None:
+    scrubbed = scrub(said.format(url=AT_IN_PASSWORD), AT_IN_PASSWORD)
+
+    assert "Summer" not in scrubbed
+    assert "2024x" not in scrubbed
+    assert f"rtsp://{MASK}@192.168.1.50:554/stream2" in scrubbed

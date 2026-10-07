@@ -44,8 +44,9 @@ def mask_url(url: str) -> str:
     )
 
 
-#: The user information of any URL in a piece of text: ``scheme://`` up to the ``@``.
-_USERINFO: Final = re.compile(r"(?i)\b([a-z][a-z0-9+.-]*://)[^\s/@]*@")
+#: The user information of any URL in a piece of text: ``scheme://`` up to the last
+#: ``@`` before the path, since a password may hold an ``@`` of its own.
+_USERINFO: Final = re.compile(r"(?i)\b([a-z][a-z0-9+.-]*://)[^\s/]*@")
 
 
 def scrub(text: str, url: str) -> str:
@@ -55,12 +56,13 @@ def scrub(text: str, url: str) -> str:
     Any URL's user information is masked, and so is ``url``'s password wherever else
     it turns up, as typed or percent-decoded.
     """
-    text = _USERINFO.sub(rf"\1{MASK}@", text)
     try:
         password = urlsplit(url).password
     except ValueError:
         password = None
+    # The password first, whole: masking user information can split one that holds an
+    # @, leaving the part after it for this to miss.
     if password:
         for secret in {password, unquote(password)}:
             text = text.replace(secret, MASK)
-    return text
+    return _USERINFO.sub(rf"\1{MASK}@", text)
