@@ -10,7 +10,8 @@ import numpy.typing as npt
 import pytest
 
 from pihome_vision import __main__, __version__, camera, detect
-from pihome_vision.__main__ import EXIT_CONFIGURATION_ERROR, main
+from pihome_vision.__main__ import main
+from pihome_vision.config import EXIT_CONFIGURATION_ERROR
 from pihome_vision.detect import Detection
 from tests.conftest import CAMERA_PASSWORD, HUB_KEY, Plan
 

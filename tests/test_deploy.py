@@ -18,6 +18,7 @@ from pathlib import Path
 import pytest
 
 from pihome_vision import __main__, camera, hub, service
+from pihome_vision.config import EXIT_CONFIGURATION_ERROR
 from pihome_vision.settings import ENV_PREFIX, Settings
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -54,8 +55,7 @@ class TestUnitMatchesTheCode:
     ) -> None:
         statuses = service_section["RestartPreventExitStatus"].split()
 
-        assert str(__main__.EXIT_CONFIGURATION_ERROR) in statuses
-        assert str(service.EXIT_CONFIGURATION_ERROR) in statuses
+        assert str(EXIT_CONFIGURATION_ERROR) in statuses
 
     def test_it_runs_the_service_through_a_console_script(
         self, service_section: dict[str, str]

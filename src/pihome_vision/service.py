@@ -21,7 +21,7 @@ import cv2
 import numpy as np
 
 from pihome_vision import systemd
-from pihome_vision.config import Camera
+from pihome_vision.config import EXIT_CONFIGURATION_ERROR, Camera
 from pihome_vision.detect import Detection, Frame, ModelError
 from pihome_vision.lights import Lights
 from pihome_vision.triggers import Watcher
@@ -48,9 +48,6 @@ _TICK: Final = 0.5
 #: What a frame is shrunk to, grey, to tell whether it has changed. Small enough that
 #: sensor noise averages out and comparing costs nothing next to the model.
 _THUMBNAIL: Final = (160, 90)
-
-#: Exit status for a configuration the service cannot run with, as the CLI's.
-EXIT_CONFIGURATION_ERROR: Final = 2
 
 _log = logging.getLogger(__name__)
 

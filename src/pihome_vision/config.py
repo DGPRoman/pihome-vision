@@ -53,6 +53,11 @@ class ConfigError(Exception):
     """``vision.yaml`` is missing, unreadable or wrong. The message says which."""
 
 
+#: The exit status of a command or the service started with a configuration it cannot
+#: use. A service manager should not retry: nothing will have changed by the next attempt.
+EXIT_CONFIGURATION_ERROR: Final = 2
+
+
 class _Strict(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
