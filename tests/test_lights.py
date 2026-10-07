@@ -7,7 +7,7 @@ from collections.abc import Sequence
 import pytest
 
 from pihome_vision.config import Light
-from pihome_vision.hub import Hub
+from pihome_vision.hub import Hub, HubError, Refusal
 from pihome_vision.lights import (
     MAX_RETRY_WAIT,
     OFF_PATIENCE,
@@ -333,3 +333,109 @@ def test_its_thread_switches_as_the_camera_decides(hub: FakeHub) -> None:
         lights.stop()
 
     assert hub.relays[RELAY] is False
+
+
+class LostAnswers:
+    """A hub that does what it is asked, but whose answers to the first few switches
+    never arrive."""
+
+    def __init__(self, *, lost: int, on: bool = False) -> None:
+        self.on = on
+        self.lost = lost
+        self.calls: list[str] = []
+
+    def read(self, relay: str) -> bool:
+        self.calls.append("GET")
+        return self.on
+
+    def switch(self, relay: str, *, on: bool) -> bool:
+        self.calls.append("PUT on" if on else "PUT off")
+        self.on = on
+        if self.lost:
+            self.lost -= 1
+            msg = "timed out"
+            raise HubError(Refusal.UNAVAILABLE, msg)
+        return on
+
+
+class LostScene:
+    def __init__(self, relays: LostAnswers) -> None:
+        self.relays = relays
+        self.clock = Clock()
+        self.lights = Lights([light()], relays, clock=self.clock)
+
+    def frame(self, seconds: float, active: Sequence[str] = (), *events: Event) -> None:
+        self.clock.now += seconds
+        self.lights.update(list(events), frozenset(active), self.clock.now)
+        self.lights.pump()
+
+    def drive(self, change: str) -> Event:
+        return Event("drive", change, self.clock.now)  # type: ignore[arg-type]
+
+
+def test_an_on_that_got_there_unanswered_is_switched_off_later() -> None:
+    scene = LostScene(LostAnswers(lost=1))
+
+    scene.frame(0, ["drive"], scene.drive("active"))  # switched, answer lost
+    scene.frame(1, ["drive"])  # the retry reads it on: this program's doing
+    assert scene.lights.lit == {RELAY}
+
+    scene.frame(1, [], scene.drive("clear"))
+    scene.frame(OFF_AFTER)
+
+    assert scene.relays.on is False
+    assert scene.relays.calls == ["GET", "PUT on", "GET", "GET", "PUT off"]
+
+
+def test_an_unanswered_on_is_switched_off_even_if_the_triggers_end_first() -> None:
+    scene = LostScene(LostAnswers(lost=1))
+
+    scene.frame(0, ["drive"], scene.drive("active"))  # switched, answer lost
+    scene.frame(0, [], scene.drive("clear"))
+    scene.frame(OFF_AFTER)
+
+    assert scene.relays.on is False
+
+
+def test_stopping_switches_off_a_light_whose_on_went_unanswered() -> None:
+    scene = LostScene(LostAnswers(lost=1))
+    scene.frame(0, ["drive"], scene.drive("active"))  # switched, answer lost
+
+    scene.lights.stop()
+
+    assert scene.relays.on is False
+
+
+def test_an_off_that_got_there_unanswered_is_not_taken_for_somebody_else(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    scene = LostScene(LostAnswers(lost=0))
+    scene.frame(0, ["drive"], scene.drive("active"))
+    scene.relays.lost = 1
+
+    with caplog.at_level(logging.INFO, logger="pihome_vision.lights"):
+        scene.frame(0, [], scene.drive("clear"))
+        scene.frame(OFF_AFTER)  # switched off, answer lost
+        scene.frame(1)  # the retry reads it off
+
+    assert scene.relays.on is False
+    assert scene.lights.lit == set()
+    assert "the request that went unanswered got there" in caplog.text
+    assert "somebody switched it off" not in caplog.text
+
+
+def test_a_light_somebody_else_lit_is_still_left_alone_after_a_lost_answer() -> None:
+    scene = LostScene(LostAnswers(lost=0))
+    scene.frame(0, ["drive"], scene.drive("active"))
+    scene.frame(0, [], scene.drive("clear"))
+    scene.relays.lost = 1
+    scene.frame(OFF_AFTER)  # switched off, answer lost
+    scene.frame(1)  # the retry reads it off, and that settles it
+
+    scene.relays.on = True  # somebody switches it on by hand
+    scene.frame(1, ["drive"], scene.drive("active"))
+    scene.frame(1, [], scene.drive("clear"))
+    scene.frame(OFF_AFTER)
+
+    assert scene.relays.calls.count("PUT on") == 1
+    assert scene.relays.on is True

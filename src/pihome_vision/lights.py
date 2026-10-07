@@ -17,6 +17,10 @@ people in the house:
   has gone is a bug, so switching on is retried for :data:`ON_WINDOW` and then
   given up. Switching off is retried for :data:`OFF_PATIENCE`.
 
+A request that gets no answer may still have been done: the hub can switch the relay
+and the answer be lost on the way back. So an "on" that went unanswered counts as
+this program's if the relay turns out to be on, rather than as somebody else's.
+
 A 401 stops every request until the program restarts: the hub counts failed keys
 per address, and trying a wrong key again would lock out every client behind the
 same router. A 404 or another refusal stops that light only, and a 429 pauses all
@@ -102,6 +106,15 @@ class _Switch:
     wait: float = FIRST_RETRY_WAIT
     #: Whether the hub being unavailable has been logged since the last success.
     warned: bool = False
+    #: The state last asked of the hub that did not say whether it was done (no
+    #: answer, or a failure on its side), which the relay may or may not be in now.
+    #: None once a request has been answered.
+    unanswered: bool | None = None
+
+    @property
+    def maybe_lit(self) -> bool:
+        """Lit by this program, or perhaps lit by an "on" that went unanswered."""
+        return self.lit or self.unanswered is True
 
 
 class Lights:
@@ -176,9 +189,9 @@ class Lights:
         if self._thread.is_alive():
             self._thread.join()
         for switch in self._switches.values():
-            if switch.lit and not switch.disabled and self._halted is None:
+            if switch.maybe_lit and not switch.disabled and self._halted is None:
                 try:
-                    switch.lit = self._switch_off(switch.relay)
+                    switch.lit = self._switch_off(switch)
                 except HubError as exc:
                     _log.error("could not switch %s off on the way out: %s", switch.relay, exc)
 
@@ -224,7 +237,7 @@ class Lights:
                     )
                     switch.wanted = None
                     continue
-                if not switch.wanted and not switch.lit:
+                if not switch.wanted and not switch.maybe_lit:
                     # Somebody else's light, or one already off.
                     switch.wanted = None
                     continue
@@ -236,6 +249,7 @@ class Lights:
                     )
                     switch.wanted = None
                     switch.lit = False
+                    switch.unanswered = None
                     continue
                 return switch, switch.wanted, switch.since
         return None
@@ -244,22 +258,42 @@ class Lights:
         """Put ``switch`` in the ``wanted`` state if that is this program's to do, and
         say whether it is lit by this program afterwards."""
         if not wanted:
-            return self._switch_off(switch.relay)
+            return self._switch_off(switch)
         if self._relays.read(switch.relay):
+            if switch.unanswered is True:
+                _log.info("%s is on: the request that went unanswered got there", switch.relay)
+                switch.unanswered = None
+                return True
             if not switch.lit:
                 _log.info("%s is on already; leaving it to whoever switched it on", switch.relay)
             return switch.lit
-        lit = self._relays.switch(switch.relay, on=True)
+        lit = self._send(switch, on=True)
         _log.info("switched %s on", switch.relay)
         return lit
 
-    def _switch_off(self, relay: str) -> bool:
-        if self._relays.read(relay):
-            self._relays.switch(relay, on=False)
-            _log.info("switched %s off", relay)
+    def _switch_off(self, switch: _Switch) -> bool:
+        if self._relays.read(switch.relay):
+            self._send(switch, on=False)
+            _log.info("switched %s off", switch.relay)
         else:
-            _log.info("%s is off already: somebody switched it off", relay)
+            if switch.unanswered is False:
+                _log.info("%s is off: the request that went unanswered got there", switch.relay)
+            else:
+                _log.info("%s is off already: somebody switched it off", switch.relay)
+            switch.unanswered = None
         return False
+
+    def _send(self, switch: _Switch, *, on: bool) -> bool:
+        """Ask the hub to switch ``switch`` and say whether it is on, remembering a
+        request that got no answer: the hub may well have done it anyway."""
+        try:
+            done = self._relays.switch(switch.relay, on=on)
+        except HubError as exc:
+            if exc.refusal is Refusal.UNAVAILABLE:
+                switch.unanswered = on
+            raise
+        switch.unanswered = None
+        return done
 
     def _refused(self, switch: _Switch, since: float, exc: HubError) -> None:
         with self._lock:
