@@ -21,6 +21,8 @@ model:
   # The square frames are scaled into, for a model exported to take any size. Left
   # out, the size the model was exported at, square or not.
   # input_size: 640
+  # Detections less certain than this are ignored. Lower finds more, and more that
+  # is not there.
   confidence: 0.35
   # What runs it: onnxruntime, or opencv, which is slower. docs/models.md compares them.
   # engine: onnxruntime
@@ -30,6 +32,8 @@ model:
 
 cameras:
   - id: gate
+    # Frames the model looks at each second. More see somebody sooner, on more CPU;
+    # README.md, tuning, says how much.
     fps: 5
     # Skip detection while the picture is still. 0 always detects.
     motion_threshold: 0

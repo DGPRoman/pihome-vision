@@ -99,7 +99,7 @@ class DetectionModel(_Strict):
     #: ONNX Runtime will not run.
     engine: Engine = "onnxruntime"
     #: Threads to run the model on. Unset, as many as there are CPUs, up to 4 for ONNX
-    #: Runtime and 8 for OpenCV: more make a 640 model no faster, only busier.
+    #: Runtime and 8 for OpenCV: more make a 640 model a little faster on a lot more CPU.
     threads: Annotated[int, Field(ge=1, le=256)] | None = None
 
 
