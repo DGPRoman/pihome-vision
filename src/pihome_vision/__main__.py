@@ -9,12 +9,18 @@ import sys
 import time
 from collections.abc import Callable, Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING
 
 from pydantic import ValidationError
 
 from pihome_vision import __version__
-from pihome_vision.config import ConfigError, DetectionModel, VisionConfig, load_config
+from pihome_vision.config import (
+    EXIT_CONFIGURATION_ERROR,
+    ConfigError,
+    DetectionModel,
+    VisionConfig,
+    load_config,
+)
 from pihome_vision.redact import mask_url
 from pihome_vision.settings import (
     CameraSettings,
@@ -22,10 +28,6 @@ from pihome_vision.settings import (
     config_path_from_environment,
     render_settings_error,
 )
-
-#: Started with a configuration it cannot use. A service manager should not retry:
-#: nothing will have changed by the next attempt.
-EXIT_CONFIGURATION_ERROR: Final = 2
 
 #: How long ``check`` watches the camera to measure how fast frames arrive.
 CHECK_SECONDS = 3.0
@@ -41,6 +43,12 @@ if TYPE_CHECKING:
     from pihome_vision.detect import Detection, Frame
 
 
+def _refuse(problem: Exception) -> int:
+    """Say what is wrong with the configuration, and return the status to exit with."""
+    sys.stderr.write(f"pihome-vision: {problem}\n")
+    return EXIT_CONFIGURATION_ERROR
+
+
 def _load[S: CameraSettings](kind: type[S]) -> tuple[S, VisionConfig]:
     """Both halves of the configuration, the environment read as ``kind``, or exit 2
     saying what is wrong."""
@@ -52,9 +60,17 @@ def _load[S: CameraSettings](kind: type[S]) -> tuple[S, VisionConfig]:
     try:
         config = load_config(settings.config_path)
     except ConfigError as exc:
-        sys.stderr.write(f"pihome-vision: {exc}\n")
-        raise SystemExit(EXIT_CONFIGURATION_ERROR) from None
+        raise SystemExit(_refuse(exc)) from None
     return settings, config
+
+
+def _load_config() -> VisionConfig:
+    """``vision.yaml`` alone, for a command that needs none of the secrets, or exit 2
+    saying what is wrong."""
+    try:
+        return load_config(config_path_from_environment())
+    except ConfigError as exc:
+        raise SystemExit(_refuse(exc)) from None
 
 
 def _validate(_: argparse.Namespace) -> int:
@@ -96,11 +112,7 @@ def _detect(args: argparse.Namespace) -> int:
 
     from pihome_vision.detect import ModelError  # noqa: PLC0415
 
-    try:
-        model = load_config(config_path_from_environment()).model
-    except ConfigError as exc:
-        sys.stderr.write(f"pihome-vision: {exc}\n")
-        return EXIT_CONFIGURATION_ERROR
+    model = _load_config().model
     image = cv2.imread(str(args.image))
     if image is None:
         sys.stderr.write(f"pihome-vision: {args.image} is not an image OpenCV can read\n")
@@ -109,8 +121,7 @@ def _detect(args: argparse.Namespace) -> int:
     try:
         found, elapsed = _run_model(model, frame)
     except ModelError as exc:
-        sys.stderr.write(f"pihome-vision: {exc}\n")
-        return EXIT_CONFIGURATION_ERROR
+        return _refuse(exc)
     height, width = frame.shape[:2]
     out = sys.stdout
     out.write(f"{args.image}: {width}x{height}, {elapsed * 1000:.0f} ms, {len(found)} found\n")
@@ -151,8 +162,7 @@ def _check(_: argparse.Namespace) -> int:
     try:
         found, took = _run_model(config.model, camera.to_bgr(raw, stream.width, stream.height))
     except ModelError as exc:
-        sys.stderr.write(f"pihome-vision: {exc}\n")
-        return EXIT_CONFIGURATION_ERROR
+        return _refuse(exc)
     seen = ", ".join(f"{item.category} {item.confidence:.2f}" for item in found)
     out.write(f"  {took * 1000:.0f} ms a frame; found {seen or 'nothing'}\n")
     return 0
@@ -221,11 +231,7 @@ def _edit(args: argparse.Namespace) -> int:
             sys.stderr.write(f"pihome-vision: cannot read the camera: {exc}\n")
             return 1
     else:
-        try:
-            config = load_config(config_path_from_environment())
-        except ConfigError as exc:
-            sys.stderr.write(f"pihome-vision: {exc}\n")
-            return EXIT_CONFIGURATION_ERROR
+        config = _load_config()
         image = cv2.imread(str(args.image))
         if image is None:
             sys.stderr.write(f"pihome-vision: {args.image} is not an image OpenCV can read\n")
@@ -255,8 +261,7 @@ def _preview(_: argparse.Namespace) -> int:
     try:
         detector = detect.load(config.model)
     except detect.ModelError as exc:
-        sys.stderr.write(f"pihome-vision: {exc}\n")
-        return EXIT_CONFIGURATION_ERROR
+        return _refuse(exc)
     (watched,) = config.cameras
     source = camera.Camera(settings.camera_url.get_secret_value(), fps=watched.fps)
     source.start()
@@ -266,8 +271,7 @@ def _preview(_: argparse.Namespace) -> int:
         sys.stderr.write(f"pihome-vision: {exc}\n")
         return 1
     except detect.ModelError as exc:
-        sys.stderr.write(f"pihome-vision: {exc}\n")
-        return EXIT_CONFIGURATION_ERROR
+        return _refuse(exc)
     except KeyboardInterrupt:
         pass
     finally:
@@ -310,8 +314,7 @@ def _run(_: argparse.Namespace) -> int:
     try:
         detector = detect.load(config.model)
     except detect.ModelError as exc:
-        sys.stderr.write(f"pihome-vision: {exc}\n")
-        return EXIT_CONFIGURATION_ERROR
+        return _refuse(exc)
     sun = Sun(config.location) if config.location is not None else None
     with Hub(settings.hub_url, settings.hub_key.get_secret_value()) as hub:
         lights = Lights(config.lights, hub, darkness=sun)

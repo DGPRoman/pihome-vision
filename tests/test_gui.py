@@ -16,7 +16,7 @@ import pytest
 import yaml
 
 from pihome_vision import __main__, camera, detect, gui
-from pihome_vision.config import Camera, load_config
+from pihome_vision.config import EXIT_CONFIGURATION_ERROR, Camera, load_config
 from pihome_vision.detect import Detection, Frame
 from pihome_vision.sketch import ENTER, ESCAPE
 from tests import fake_ffmpeg
@@ -322,7 +322,10 @@ def test_edit_needs_a_configuration(
 ) -> None:
     monkeypatch.setenv("PIHOME_VISION_CONFIG_PATH", str(tmp_path / "missing.yaml"))
 
-    assert __main__.main(["edit", "--image", str(picture)]) == 2
+    with pytest.raises(SystemExit) as exited:
+        __main__.main(["edit", "--image", str(picture)])
+
+    assert exited.value.code == EXIT_CONFIGURATION_ERROR
 
 
 @pytest.mark.usefixtures("without_the_hub")
