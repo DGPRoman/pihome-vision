@@ -18,8 +18,8 @@ model:
   # and what its licence allows.
   path: models/detector.onnx
   # sha256: <the file's SHA-256, to refuse any other file>
-  # The square frames are scaled into. Left out, the size the model was exported at;
-  # needed only for a model exported to take any size.
+  # The square frames are scaled into, for a model exported to take any size. Left
+  # out, the size the model was exported at, square or not.
   # input_size: 640
   confidence: 0.35
   # Threads to run it on. Left out, as many as there are CPUs, up to 8.

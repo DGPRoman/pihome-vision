@@ -99,32 +99,34 @@ def boxes(found: list[Detection]) -> list[tuple[str, float, float, float, float]
 
 class TestLetterbox:
     @pytest.mark.parametrize(
-        ("height", "width", "expected"),
+        ("height", "width", "size", "expected"),
         [
-            (720, 1280, Letterbox(scale=0.5, left=0, top=140)),
-            (1280, 720, Letterbox(scale=0.5, left=140, top=0)),
-            (320, 320, Letterbox(scale=2.0, left=0, top=0)),
+            (720, 1280, (640, 640), Letterbox(scale=0.5, left=0, top=140)),
+            (1280, 720, (640, 640), Letterbox(scale=0.5, left=140, top=0)),
+            (320, 320, (640, 640), Letterbox(scale=2.0, left=0, top=0)),
+            (1440, 2560, (640, 384), Letterbox(scale=0.25, left=0, top=12)),
+            (1280, 720, (640, 384), Letterbox(scale=0.3, left=212, top=0)),
         ],
     )
     def test_the_frame_is_fitted_and_centred(
-        self, height: int, width: int, expected: Letterbox
+        self, height: int, width: int, size: tuple[int, int], expected: Letterbox
     ) -> None:
         frame = np.zeros((height, width, 3), dtype=np.uint8)
 
-        square, fit = letterbox(frame, 640)
+        fitted, fit = letterbox(frame, size)
 
-        assert square.shape == (640, 640, 3)
+        assert fitted.shape == (size[1], size[0], 3)
         assert fit == expected
 
     def test_padding_is_the_grey_the_model_was_trained_on(self) -> None:
-        square, _ = letterbox(np.zeros((720, 1280, 3), dtype=np.uint8), 640)
+        square, _ = letterbox(np.zeros((720, 1280, 3), dtype=np.uint8), (640, 640))
 
         assert square[0, 0].tolist() == [114, 114, 114]
         assert square[320, 320].tolist() == [0, 0, 0]
 
     @pytest.mark.parametrize(("height", "width"), [(720, 1280), (1280, 720), (500, 500)])
     def test_a_box_maps_back_to_where_it_was(self, height: int, width: int) -> None:
-        _, fit = letterbox(np.zeros((height, width, 3), dtype=np.uint8), 640)
+        _, fit = letterbox(np.zeros((height, width, 3), dtype=np.uint8), (640, 384))
         x, y, w, h = 100.0, 120.0, 80.0, 60.0
         corners = (
             x * fit.scale + fit.left,
@@ -236,9 +238,11 @@ class FakeNet:
 
     def __init__(self, works: int) -> None:
         self.works = works
+        #: The shape of each input it was given.
+        self.inputs: list[tuple[int, ...]] = []
 
-    def setInput(self, blob: object) -> None:  # noqa: N802 - OpenCV's name
-        pass
+    def setInput(self, blob: npt.NDArray[np.float32]) -> None:  # noqa: N802 - OpenCV's name
+        self.inputs.append(blob.shape)
 
     def forward(self) -> npt.NDArray[np.float32]:
         if self.works == 0:
@@ -367,26 +371,51 @@ class TestInputSize:
         size = exported_size(EXPORTED)
 
         assert size is not None
-        assert size[0] == size[1]
         assert size[0] % 32 == 0
+        assert size[1] % 32 == 0
 
-    def test_left_unset_it_is_the_models_own(self, model: Callable[..., Path]) -> None:
-        assert load(DetectionModel(path=model(1, 3, 960, 960))).input_size == 960
+    @pytest.mark.parametrize(
+        ("dims", "size"), [((1, 3, 960, 960), (960, 960)), ((1, 3, 384, 640), (640, 384))]
+    )
+    def test_left_unset_it_is_the_models_own(
+        self, model: Callable[..., Path], dims: tuple[int, ...], size: tuple[int, int]
+    ) -> None:
+        assert load(DetectionModel(path=model(*dims))).input_size == size
 
     def test_set_it_must_be_the_models_own(self, model: Callable[..., Path]) -> None:
         path = model(1, 3, 960, 960)
 
-        assert Detector(path, input_size=960, confidence=0.35).input_size == 960
-        with pytest.raises(ModelError, match=r"exported to take 960x960 images, not the 640"):
+        assert Detector(path, input_size=960, confidence=0.35).input_size == (960, 960)
+        with pytest.raises(ModelError, match=r"exported to take 960x960 images, not the 640x640"):
             Detector(path, input_size=640, confidence=0.35)
 
-    def test_a_model_that_is_not_square_is_refused(self, model: Callable[..., Path]) -> None:
-        with pytest.raises(ModelError, match=r"takes 640x384 images"):
-            Detector(model(1, 3, 384, 640), confidence=0.35)
+    def test_a_model_that_is_not_square_cannot_be_given_a_size(
+        self, model: Callable[..., Path]
+    ) -> None:
+        with pytest.raises(ModelError, match=r"exported to take 640x384 images, not the 640x640"):
+            Detector(model(1, 3, 384, 640), input_size=640, confidence=0.35)
 
-    @pytest.mark.parametrize(("configured", "size"), [(None, DEFAULT_INPUT_SIZE), (800, 800)])
+    def test_a_wide_frame_goes_to_a_wide_model_and_its_boxes_come_back(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        net = FakeNet(works=1)
+        monkeypatch.setattr(cv2.dnn, "readNetFromONNX", lambda *_: net)
+        path = tmp_path / "detector.onnx"
+        path.write_bytes(onnx_model(1, 3, 384, 640))
+
+        # The net finds a person at (10, 10)-(50, 90) of its 640x384 input, which a
+        # 2560x1440 frame fills at a quarter of its size, below 12 rows of padding.
+        found = Detector(path, confidence=0.35).detect(np.zeros((1440, 2560, 3), np.uint8))
+
+        assert net.inputs == [(1, 3, 384, 640)]
+        assert boxes(found) == [("person", 40, -8, 160, 320)]
+
+    @pytest.mark.parametrize(
+        ("configured", "size"),
+        [(None, (DEFAULT_INPUT_SIZE, DEFAULT_INPUT_SIZE)), (800, (800, 800))],
+    )
     def test_a_model_that_takes_any_size_is_run_at_the_one_configured(
-        self, model: Callable[..., Path], configured: int | None, size: int
+        self, model: Callable[..., Path], configured: int | None, size: tuple[int, int]
     ) -> None:
         path = model("batch", 3, "height", "width")
 
