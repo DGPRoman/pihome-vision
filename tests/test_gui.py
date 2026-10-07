@@ -303,7 +303,7 @@ def test_edit_without_windows_exits_1(
     assert "no display" in capsys.readouterr().err
 
 
-@pytest.mark.usefixtures("environment")
+@pytest.mark.usefixtures("without_the_hub")
 def test_edit_draws_over_a_frame_from_the_camera(
     plan: Plan, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -325,7 +325,7 @@ def test_edit_needs_a_configuration(
     assert __main__.main(["edit", "--image", str(picture)]) == 2
 
 
-@pytest.mark.usefixtures("environment")
+@pytest.mark.usefixtures("without_the_hub")
 def test_preview_shows_the_camera_until_q(plan: Plan, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(camera, "FFMPEG", plan({"frames": 50, "interval": 0.01, "then": "hang"}))
     monkeypatch.setattr(detect, "Detector", Walker)
@@ -343,7 +343,7 @@ def test_preview_without_a_model_exits_2(capsys: pytest.CaptureFixture[str]) -> 
     assert "docs/models.md" in capsys.readouterr().err
 
 
-@pytest.mark.usefixtures("environment")
+@pytest.mark.usefixtures("without_the_hub")
 def test_snapshot_saves_a_frame_only_its_owner_can_read(
     plan: Plan, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

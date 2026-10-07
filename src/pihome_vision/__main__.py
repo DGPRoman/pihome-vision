@@ -16,7 +16,12 @@ from pydantic import ValidationError
 from pihome_vision import __version__
 from pihome_vision.config import ConfigError, DetectionModel, VisionConfig, load_config
 from pihome_vision.redact import mask_url
-from pihome_vision.settings import Settings, config_path_from_environment, render_settings_error
+from pihome_vision.settings import (
+    CameraSettings,
+    Settings,
+    config_path_from_environment,
+    render_settings_error,
+)
 
 #: Started with a configuration it cannot use. A service manager should not retry:
 #: nothing will have changed by the next attempt.
@@ -36,10 +41,11 @@ if TYPE_CHECKING:
     from pihome_vision.detect import Detection, Frame
 
 
-def _load() -> tuple[Settings, VisionConfig]:
-    """Both halves of the configuration, or exit 2 saying what is wrong."""
+def _load[S: CameraSettings](kind: type[S]) -> tuple[S, VisionConfig]:
+    """Both halves of the configuration, the environment read as ``kind``, or exit 2
+    saying what is wrong."""
     try:
-        settings = Settings()  # type: ignore[call-arg]  # pydantic-settings reads the environment
+        settings = kind()  # type: ignore[call-arg]  # pydantic-settings reads the environment
     except ValidationError as exc:
         sys.stderr.write(render_settings_error(exc) + "\n")
         raise SystemExit(EXIT_CONFIGURATION_ERROR) from None
@@ -52,7 +58,7 @@ def _load() -> tuple[Settings, VisionConfig]:
 
 
 def _validate(_: argparse.Namespace) -> int:
-    settings, config = _load()
+    settings, config = _load(Settings)
     out = sys.stdout
     out.write(f"camera   {mask_url(settings.camera_url.get_secret_value())}\n")
     out.write(f"hub      {settings.hub_url}\n")
@@ -118,7 +124,7 @@ def _check(_: argparse.Namespace) -> int:
     from pihome_vision import camera  # noqa: PLC0415
     from pihome_vision.detect import ModelError  # noqa: PLC0415
 
-    settings, config = _load()
+    settings, config = _load(CameraSettings)
     url = settings.camera_url.get_secret_value()
     out = sys.stdout
     out.write(f"camera   {mask_url(url)}\n")
@@ -175,7 +181,7 @@ def _snapshot(args: argparse.Namespace) -> int:
 
     from pihome_vision import camera  # noqa: PLC0415
 
-    settings, _ = _load()
+    settings, _ = _load(CameraSettings)
     path: Path = args.path
     try:
         frame = _grab(settings.camera_url.get_secret_value())
@@ -208,7 +214,7 @@ def _edit(args: argparse.Namespace) -> int:
     from pihome_vision import camera, gui, sketch  # noqa: PLC0415
 
     if args.image is None:
-        settings, config = _load()
+        settings, config = _load(CameraSettings)
         try:
             frame = _grab(settings.camera_url.get_secret_value())
         except camera.StreamError as exc:
@@ -245,7 +251,7 @@ def _edit(args: argparse.Namespace) -> int:
 def _preview(_: argparse.Namespace) -> int:
     from pihome_vision import camera, detect, gui  # noqa: PLC0415
 
-    settings, config = _load()
+    settings, config = _load(CameraSettings)
     try:
         detector = detect.load(config.model)
     except detect.ModelError as exc:
@@ -299,7 +305,7 @@ def _run(_: argparse.Namespace) -> int:
     from pihome_vision.lights import Lights  # noqa: PLC0415
     from pihome_vision.sun import Sun  # noqa: PLC0415
 
-    settings, config = _load()
+    settings, config = _load(Settings)
     _configure_logging()
     try:
         detector = detect.load(config.model)

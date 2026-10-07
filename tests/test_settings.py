@@ -5,7 +5,7 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
-from pihome_vision.settings import Settings, render_settings_error
+from pihome_vision.settings import CameraSettings, Settings, render_settings_error
 from tests.conftest import CAMERA_PASSWORD, CAMERA_URL, HUB_KEY, HUB_URL
 
 
@@ -115,3 +115,27 @@ def test_every_missing_variable_is_named() -> None:
     message = render_settings_error(caught.value)
     for name in ("CAMERA_URL", "HUB_URL", "HUB_KEY"):
         assert f"PIHOME_VISION_{name}" in message
+
+
+def camera_only(**given: str) -> CameraSettings:
+    values: dict[str, Any] = dict(given)
+    return CameraSettings(_env_file=None, **values)  # type: ignore[call-arg]  # a pydantic-settings init option
+
+
+def test_the_camera_alone_needs_only_the_camera() -> None:
+    assert camera_only(camera_url=CAMERA_URL).camera_url.get_secret_value() == CAMERA_URL
+    with pytest.raises(ValidationError) as caught:
+        camera_only()
+
+    message = render_settings_error(caught.value)
+    assert "PIHOME_VISION_CAMERA_URL" in message
+    assert "HUB" not in message
+
+
+def test_the_camera_alone_refuses_the_same_addresses() -> None:
+    with pytest.raises(ValidationError) as caught:
+        camera_only(camera_url=f"ftp://viewer:{CAMERA_PASSWORD}@192.168.1.50/")
+
+    message = render_settings_error(caught.value)
+    assert "PIHOME_VISION_CAMERA_URL" in message
+    assert CAMERA_PASSWORD not in message
