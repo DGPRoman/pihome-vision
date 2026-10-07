@@ -81,8 +81,8 @@ class DetectionModel(_Strict):
     path: Path
     #: The file's SHA-256, to refuse a model that is not the one expected.
     sha256: Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")] | None = None
-    #: The square the frame is scaled into. Unset, the size the model was exported at;
-    #: needed only for a model exported to take any size.
+    #: The square the frame is scaled into, for a model exported to take any size.
+    #: Unset, the size the model was exported at, square or not.
     input_size: Annotated[int, Field(ge=160, le=1280, multiple_of=32)] | None = None
     #: Detections less certain than this are ignored.
     confidence: Annotated[float, Field(gt=0.0, lt=1.0)] = 0.35

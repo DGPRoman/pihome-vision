@@ -98,7 +98,7 @@ class Detection:
 
 @dataclass(frozen=True, slots=True)
 class Letterbox:
-    """How a frame was fitted into the model's square, to undo it afterwards."""
+    """How a frame was fitted into the model's input, to undo it afterwards."""
 
     scale: float
     left: int
@@ -107,20 +107,22 @@ class Letterbox:
     def to_frame(
         self, x1: float, y1: float, x2: float, y2: float
     ) -> tuple[float, float, float, float]:
-        """Corners in the square → ``x, y, width, height`` in the original frame."""
+        """Corners in the model's input → ``x, y, width, height`` in the original frame."""
         x = (x1 - self.left) / self.scale
         y = (y1 - self.top) / self.scale
         return x, y, (x2 - x1) / self.scale, (y2 - y1) / self.scale
 
 
-def letterbox(frame: Frame, size: int) -> tuple[Frame, Letterbox]:
-    """Scale ``frame`` to fit a ``size`` square, keeping its shape, and pad the rest."""
+def letterbox(frame: Frame, size: tuple[int, int]) -> tuple[Frame, Letterbox]:
+    """Scale ``frame`` to fit ``size``, a width and height, keeping its shape, and pad
+    the rest."""
     height, width = frame.shape[:2]
-    scale = min(size / height, size / width)
+    to_width, to_height = size
+    scale = min(to_height / height, to_width / width)
     new_width, new_height = round(width * scale), round(height * scale)
     resized = cv2.resize(frame, (new_width, new_height), interpolation=cv2.INTER_LINEAR)
-    canvas = np.full((size, size, 3), _PAD, dtype=np.uint8)
-    top, left = (size - new_height) // 2, (size - new_width) // 2
+    canvas = np.full((to_height, to_width, 3), _PAD, dtype=np.uint8)
+    top, left = (to_height - new_height) // 2, (to_width - new_width) // 2
     canvas[top : top + new_height, left : left + new_width] = resized
     return canvas, Letterbox(scale, left, top)
 
@@ -228,6 +230,7 @@ class Detector:
             msg = f"OpenCV cannot load {path} as an ONNX model: {_first_line(exc)}"
             raise ModelError(msg) from None
         exported = exported_size(path)
+        #: The width and height frames are scaled into.
         self.input_size = _input_size(path, exported, input_size)
         #: Whether the model's own file said what size it takes.
         self._sized = exported is not None
@@ -245,8 +248,8 @@ class Detector:
         Raises :class:`ModelError` if the model will not run on its first frame, and
         whatever OpenCV raised for a failure after that.
         """
-        square, fit = letterbox(frame, self.input_size)
-        blob = cv2.dnn.blobFromImage(square, 1 / 255.0, swapRB=True, crop=False)
+        fitted, fit = letterbox(frame, self.input_size)
+        blob = cv2.dnn.blobFromImage(fitted, 1 / 255.0, swapRB=True, crop=False)
         self._net.setInput(blob)
         try:
             output = self._net.forward()
@@ -255,7 +258,8 @@ class Detector:
                 # Not the configuration, which has worked: running short of memory,
                 # say. Reported as a failure, so a service manager restarts it.
                 raise
-            size = f"a {self.input_size}x{self.input_size} input"
+            width, height = self.input_size
+            size = f"a {width}x{height} input"
             if self._sized:
                 msg = f"the model would not run on {size}, the size it was exported at"
             else:
@@ -285,29 +289,27 @@ def load(model: DetectionModel) -> Detector:
     )
 
 
-def _input_size(path: Path, exported: tuple[int, int] | None, configured: int | None) -> int:
-    """The square to scale frames into for a model that takes ``exported`` images:
-    that size, or for a model that takes any, ``configured`` or the default.
+def _input_size(
+    path: Path, exported: tuple[int, int] | None, configured: int | None
+) -> tuple[int, int]:
+    """The width and height to scale frames into for a model that takes ``exported``
+    images: that size, or for a model that takes any, a ``configured`` square or the
+    default one.
 
-    Raises :class:`ModelError` for a model that is not square, or not the size
-    configured.
+    Raises :class:`ModelError` for a model that is not the size configured.
     """
     if exported is None:
-        return configured if configured is not None else DEFAULT_INPUT_SIZE
+        side = configured if configured is not None else DEFAULT_INPUT_SIZE
+        return side, side
     height, width = exported
-    if height != width:
+    if configured is not None and (configured, configured) != (width, height):
         msg = (
-            f"{path} takes {width}x{height} images, and only a square input can be run "
-            f"here; export it at one size, such as imgsz=640"
+            f"{path} was exported to take {width}x{height} images, not the "
+            f"{configured}x{configured} model.input_size sets; leave input_size out to "
+            f"use the model's own"
         )
         raise ModelError(msg)
-    if configured is not None and configured != height:
-        msg = (
-            f"{path} was exported to take {height}x{height} images, not the {configured} "
-            f"model.input_size sets; leave input_size out to use the model's own"
-        )
-        raise ModelError(msg)
-    return height
+    return width, height
 
 
 def exported_size(path: Path) -> tuple[int, int] | None:
