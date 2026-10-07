@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 
 import cv2
@@ -10,12 +11,14 @@ import pytest
 from pihome_vision.config import DetectionModel
 from pihome_vision.detect import (
     COCO_CLASSES,
+    DEFAULT_INPUT_SIZE,
     MAX_THREADS,
     Detection,
     Detector,
     Letterbox,
     ModelError,
     decode,
+    exported_size,
     file_sha256,
     letterbox,
     load,
@@ -25,6 +28,9 @@ PERSON, BICYCLE, CAR, CAT, TRUCK, DOG = 0, 1, 2, 15, 7, 16
 
 #: A frame that fills the square exactly, so boxes decode to the numbers written.
 IDENTITY = Letterbox(scale=1.0, left=0, top=0)
+
+#: A model exported from YOLO, if there is one here to try the reader on.
+EXPORTED = Path(__file__).parents[1] / "models" / "detector.onnx"
 
 
 def end_to_end(*rows: tuple[float, float, float, float, float, int]) -> npt.NDArray[np.float32]:
@@ -40,6 +46,49 @@ def classic(
         output[0, :4, column] = (cx, cy, w, h)
         output[0, 4 + class_id, column] = score
     return output
+
+
+def _varint(value: int) -> bytes:
+    out = bytearray()
+    while value >= 0x80:
+        out.append(value & 0x7F | 0x80)
+        value >>= 7
+    out.append(value)
+    return bytes(out)
+
+
+def field(number: int, value: int | bytes) -> bytes:
+    """One protobuf field: an integer, or the bytes of a string or message."""
+    if isinstance(value, int):
+        return _varint(number << 3) + _varint(value)
+    return _varint(number << 3 | 2) + _varint(len(value)) + value
+
+
+def onnx_model(*dims: int | str) -> bytes:
+    """An ONNX model, as far as its size goes: one input of shape ``dims``, a number
+    or, for a dimension of any size, a name. Around it are the fields of a real export
+    that a reader steps over: a node, weights, an output and metadata."""
+    shape = b"".join(
+        field(1, field(1, dim) if isinstance(dim, int) else field(2, dim.encode())) for dim in dims
+    )
+    image = field(1, b"images") + field(2, field(1, field(1, 1) + field(2, shape)))
+    # dims, name and raw_data, then float_data and double_data written unpacked.
+    weights = field(1, 64) + field(8, b"model.0.conv.weight") + field(9, bytes(256))
+    weights += _varint(4 << 3 | 5) + bytes(4) + _varint(10 << 3 | 1) + bytes(8)
+    graph = (
+        field(1, field(1, b"images") + field(2, b"output0") + field(4, b"Conv"))
+        + field(2, b"main_graph")
+        + field(5, weights)
+        + field(11, image)
+        + field(12, field(1, b"output0"))
+    )
+    return (
+        field(1, 8)  # ir_version
+        + field(2, b"pytorch")
+        + field(8, field(2, 12))  # opset 12
+        + field(7, graph)
+        + field(14, field(1, b"imgsz") + field(2, b"[640, 640]"))
+    )
 
 
 def boxes(found: list[Detection]) -> list[tuple[str, float, float, float, float]]:
@@ -222,6 +271,16 @@ class TestFailing:
         with pytest.raises(ModelError, match="input_size must be the size it was exported at"):
             detector.detect(self.FRAME)
 
+    def test_so_is_one_that_says_its_size_and_will_not_run_at_it(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        path = tmp_path / "detector.onnx"
+        path.write_bytes(onnx_model(1, 3, 640, 640))
+        detector = self.detector(path, monkeypatch, works=0)
+
+        with pytest.raises(ModelError, match=r"640x640 input, the size it was exported at \("):
+            detector.detect(self.FRAME)
+
     def test_a_failure_after_it_has_run_is_not(
         self, fake_model: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -258,3 +317,77 @@ class TestThreads:
         load(model)
 
         assert pool == [12]
+
+
+class TestInputSize:
+    @pytest.fixture
+    def model(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Callable[..., Path]:
+        """Writes a model with an input of the given shape, which loads as one that runs."""
+        monkeypatch.setattr(cv2.dnn, "readNetFromONNX", lambda *_: FakeNet(works=1))
+
+        def write(*dims: int | str) -> Path:
+            path = tmp_path / "detector.onnx"
+            path.write_bytes(onnx_model(*dims))
+            return path
+
+        return write
+
+    @pytest.mark.parametrize(
+        ("dims", "size"),
+        [
+            ((1, 3, 640, 640), (640, 640)),
+            ((1, 3, 1024, 1024), (1024, 1024)),
+            ((1, 3, 384, 640), (384, 640)),
+            (("batch", 3, "height", "width"), None),
+            ((1, 3, 640), None),
+        ],
+    )
+    def test_the_model_file_says_what_size_it_takes(
+        self, model: Callable[..., Path], dims: tuple[int | str, ...], size: tuple[int, int]
+    ) -> None:
+        assert exported_size(model(*dims)) == size
+
+    @pytest.mark.parametrize(
+        "data",
+        [
+            b"",
+            b"not a model at all",
+            b"\xff" * 16,
+            onnx_model(1, 3, 640, 640)[:100],
+        ],
+    )
+    def test_a_file_that_is_not_one_says_nothing(self, tmp_path: Path, data: bytes) -> None:
+        path = tmp_path / "detector.onnx"
+        path.write_bytes(data)
+
+        assert exported_size(path) is None
+
+    @pytest.mark.skipif(not EXPORTED.is_file(), reason="no model in models/")
+    def test_so_does_one_exported_from_yolo(self) -> None:
+        size = exported_size(EXPORTED)
+
+        assert size is not None
+        assert size[0] == size[1]
+        assert size[0] % 32 == 0
+
+    def test_left_unset_it_is_the_models_own(self, model: Callable[..., Path]) -> None:
+        assert load(DetectionModel(path=model(1, 3, 960, 960))).input_size == 960
+
+    def test_set_it_must_be_the_models_own(self, model: Callable[..., Path]) -> None:
+        path = model(1, 3, 960, 960)
+
+        assert Detector(path, input_size=960, confidence=0.35).input_size == 960
+        with pytest.raises(ModelError, match=r"exported to take 960x960 images, not the 640"):
+            Detector(path, input_size=640, confidence=0.35)
+
+    def test_a_model_that_is_not_square_is_refused(self, model: Callable[..., Path]) -> None:
+        with pytest.raises(ModelError, match=r"takes 640x384 images"):
+            Detector(model(1, 3, 384, 640), confidence=0.35)
+
+    @pytest.mark.parametrize(("configured", "size"), [(None, DEFAULT_INPUT_SIZE), (800, 800)])
+    def test_a_model_that_takes_any_size_is_run_at_the_one_configured(
+        self, model: Callable[..., Path], configured: int | None, size: int
+    ) -> None:
+        path = model("batch", 3, "height", "width")
+
+        assert Detector(path, input_size=configured, confidence=0.35).input_size == size

@@ -18,8 +18,10 @@ heads Ultralytics exports, with the 80 COCO classes:
 Of the 80 classes, only `person` and the vehicles (bicycle, car, motorcycle, bus, truck)
 are used. Everything else is dropped as soon as it is decoded.
 
-The input size is fixed when a model is exported. `model.input_size` in `vision.yaml`
-must be that size, and pihome-vision says so if it is not.
+The input size is fixed when a model is exported, and pihome-vision reads it from the
+file. `model.input_size` in `vision.yaml` is needed only for a model exported to take
+any size (`dynamic=True`), and is 640 if left out. Set for a model of one size, it must
+be that size, and pihome-vision refuses to start if it is not.
 
 The model runs on as many threads as there are CPUs, up to 8. More make a 640 model no
 faster, and only keep more cores busy: on a 6-core, 12-thread desktop, 8 threads ran a
