@@ -65,5 +65,7 @@ def hub() -> Iterator[FakeHub]:
     server = fake_hub.serve(fake)
     yield fake
     fake.released.set()
+    for client in fake.clients:
+        client.close()
     server.shutdown()
     server.server_close()

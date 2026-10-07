@@ -7,7 +7,7 @@ from collections.abc import Sequence
 import pytest
 
 from pihome_vision.config import Light
-from pihome_vision.hub import Hub, HubError, Refusal
+from pihome_vision.hub import HubError, Refusal
 from pihome_vision.lights import (
     MAX_RETRY_WAIT,
     OFF_PATIENCE,
@@ -115,7 +115,7 @@ class Scene:
     def __init__(self, hub: FakeHub, *, key: str = HUB_KEY, **overrides: object) -> None:
         self.hub = hub
         self.clock = Clock()
-        self.lights = Lights([light(**overrides)], Hub(hub.origin, key), clock=self.clock)
+        self.lights = Lights([light(**overrides)], hub.client(key), clock=self.clock)
 
     def zone(self, change: str) -> None:
         now = self.clock.now
@@ -320,7 +320,7 @@ def test_stopping_leaves_what_it_did_not_light(hub: FakeHub) -> None:
 
 
 def test_its_thread_switches_as_the_camera_decides(hub: FakeHub) -> None:
-    lights = Lights([light()], Hub(hub.origin, HUB_KEY))
+    lights = Lights([light()], hub.client())
     lights.start()
     try:
         now = time.monotonic()

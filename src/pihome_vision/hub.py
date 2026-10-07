@@ -4,19 +4,23 @@ Nothing else of the hub's API is used. Every request carries the relay key in
 ``X-API-Key`` and is sent to the configured origin only: redirects are refused
 rather than followed, because following one would hand the key to wherever it
 pointed, and proxies from the environment are ignored for the same reason.
+
+One connection is kept open from request to request. Switching a light on is a
+read and then a switch, and on a connection already open the two take about a
+third of the time they take on two new ones, TLS handshakes and all.
 """
 
 from __future__ import annotations
 
 import json
 import ssl
-import urllib.error
-import urllib.request
+import threading
 from enum import Enum
 from http import HTTPStatus
-from http.client import HTTPException, HTTPMessage
-from typing import IO, Final, Protocol, override
-from urllib.parse import quote
+from http.client import HTTPConnection, HTTPException, HTTPSConnection
+from types import TracebackType
+from typing import Final, Protocol, Self
+from urllib.parse import quote, urlsplit
 
 #: Seconds to wait for the hub to answer one request.
 TIMEOUT: Final = 5.0
@@ -56,35 +60,26 @@ class Relays(Protocol):
         ...
 
 
-class _NoRedirects(urllib.request.HTTPRedirectHandler):
-    @override
-    def redirect_request(
-        self,
-        req: urllib.request.Request,
-        fp: IO[bytes],
-        code: int,
-        msg: str,
-        headers: HTTPMessage,
-        newurl: str,
-    ) -> None:
-        return None
-
-
 _UNAVAILABLE_STATUSES: Final = frozenset({500, 502, 503, 504})
 
 
 class Hub:
-    """The hub at ``origin``, asked with ``key``."""
+    """The hub at ``origin``, asked with ``key``, one request at a time."""
 
     def __init__(self, origin: str, key: str, *, timeout: float = TIMEOUT) -> None:
-        self._origin = origin.rstrip("/")
+        # The origin is checked when the settings are loaded: http or https, a host
+        # and maybe a port, nothing else.
+        parts = urlsplit(origin)
+        self._https = parts.scheme == "https"
+        self._host = parts.hostname or ""
+        # Given apart from the host, which http.client would otherwise read the
+        # last group of an IPv6 address from as a port.
+        self._port = parts.port or (443 if self._https else 80)
         self._key = key
         self._timeout = timeout
-        self._opener = urllib.request.build_opener(
-            urllib.request.ProxyHandler({}),
-            urllib.request.HTTPSHandler(context=ssl.create_default_context()),
-            _NoRedirects(),
-        )
+        self._context = ssl.create_default_context() if self._https else None
+        self._connection: HTTPConnection | None = None
+        self._lock = threading.Lock()
 
     def read(self, relay: str) -> bool:
         return self._request("GET", relay, None)
@@ -92,25 +87,87 @@ class Hub:
     def switch(self, relay: str, *, on: bool) -> bool:
         return self._request("PUT", relay, {"on": on})
 
+    def close(self) -> None:
+        """Close the connection kept open; the next request opens another."""
+        with self._lock:
+            self._drop()
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(
+        self,
+        kind: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        self.close()
+
     def _request(self, method: str, relay: str, body: dict[str, bool] | None) -> bool:
-        url = f"{self._origin}/v1/relays/{quote(relay, safe='')}"
+        path = f"/v1/relays/{quote(relay, safe='')}"
         headers = {"X-API-Key": self._key, "Accept": "application/json"}
         data = None
         if body is not None:
             data = json.dumps(body).encode()
             headers["Content-Type"] = "application/json"
-        # The origin is checked when the settings are loaded: http or https only.
-        request = urllib.request.Request(url, data, headers, method=method)  # noqa: S310
-        try:
-            with self._opener.open(request, timeout=self._timeout) as response:
-                payload = response.read()
-        except urllib.error.HTTPError as exc:
-            exc.close()
-            raise _refusal(exc.code) from None
-        except (OSError, HTTPException) as exc:
-            reason = exc.reason if isinstance(exc, urllib.error.URLError) else exc
-            raise HubError(Refusal.UNAVAILABLE, str(reason)) from None
+        with self._lock:
+            status, payload = self._exchange(method, path, data, headers)
+        if status != HTTPStatus.OK:
+            raise _refusal(status)
         return _on(payload)
+
+    def _exchange(
+        self, method: str, path: str, data: bytes | None, headers: dict[str, str]
+    ) -> tuple[int, bytes]:
+        if self._connection is not None:
+            try:
+                return self._send(self._connection, method, path, data, headers)
+            except TimeoutError as exc:
+                # A hub too slow to answer is not asked again at once: the lights
+                # retry when it is worth it.
+                raise _unavailable(exc) from None
+            except (OSError, HTTPException):
+                # Closed by the hub after lying idle, which it may have done just as
+                # this was sent. Both requests can be repeated safely, so this one
+                # goes again on a new connection.
+                pass
+        self._connection = (
+            HTTPSConnection(self._host, self._port, timeout=self._timeout, context=self._context)
+            if self._https
+            else HTTPConnection(self._host, self._port, timeout=self._timeout)
+        )
+        try:
+            return self._send(self._connection, method, path, data, headers)
+        except (OSError, HTTPException) as exc:
+            raise _unavailable(exc) from None
+
+    def _send(
+        self,
+        connection: HTTPConnection,
+        method: str,
+        path: str,
+        data: bytes | None,
+        headers: dict[str, str],
+    ) -> tuple[int, bytes]:
+        try:
+            connection.request(method, path, data, headers)
+            response = connection.getresponse()
+            payload = response.read()
+        except BaseException:
+            self._drop()
+            raise
+        if response.will_close:
+            self._drop()
+        return response.status, payload
+
+    def _drop(self) -> None:
+        if self._connection is not None:
+            self._connection.close()
+            self._connection = None
+
+
+def _unavailable(exc: OSError | HTTPException) -> HubError:
+    return HubError(Refusal.UNAVAILABLE, str(exc) or type(exc).__name__)
 
 
 def _refusal(status: int) -> HubError:
