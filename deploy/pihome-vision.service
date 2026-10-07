@@ -14,9 +14,18 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
-# Not Type=simple: exec waits for the binary to be executed, so a missing venv is
-# a failed start rather than a service that reports active and then dies.
-Type=exec
+# Not Type=simple: the service says when it is watching the camera, so a missing venv
+# or a model that cannot be loaded is a failed start rather than a service that
+# reports active and then dies. It then says it is alive while its pipeline moves.
+Type=notify
+NotifyAccess=main
+# A pipeline that has not moved for half of this, stuck in a model run that never
+# returns say, is stopped and, through Restart=, started again. The pipeline moves at
+# least once a second, frames or not. SIGTERM rather than the default SIGABRT: the
+# lights are switched off on the way out, and no core is dumped with the camera's
+# password in it.
+WatchdogSec=30s
+WatchdogSignal=SIGTERM
 # An account made up for each run and gone after it. Nothing here outlives a run, so
 # there is nothing for a fixed account to own.
 DynamicUser=yes
@@ -42,9 +51,10 @@ RestartSec=10s
 # fix that, and a crash loop would bury the one journal line explaining what to change.
 RestartPreventExitStatus=2
 
-# Lights this switched on are switched off on the way out, each one request of up to
-# five seconds to the hub, and then ffmpeg is given five to go. Leave room for both,
-# but not enough that a wedged process holds up a shutdown.
+# The pipeline is given five seconds to finish its step. Then the lights this switched
+# on are switched off, each a read and a switch of up to five seconds each to the hub,
+# and ffmpeg is given five to go. Leave room for all of it, but not enough that a
+# wedged process holds up a shutdown.
 TimeoutStopSec=30s
 # SIGTERM to the service alone, which closes ffmpeg itself once the lights are off.
 # The default sends it to ffmpeg as well, which then dies first and is taken for a

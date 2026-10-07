@@ -3,7 +3,7 @@
 The suite can neither start a unit nor run the installer, so what is checked here is
 where those two files restate a fact that lives in Python: the exit status not to
 retry, the command that runs the service, the variable that says where vision.yaml
-is, how long stopping can take, and the files the installer copies. Each is easy to
+is, how long stopping and a step can take, and the files the installer copies. Each is easy to
 change on one side only, and the failure would surface on the machine the service
 runs on rather than in CI.
 """
@@ -80,10 +80,27 @@ class TestUnitMatchesTheCode:
     ) -> None:
         """A light is read and then switched, and ffmpeg is given its grace after."""
         timeout = re.fullmatch(r"(\d+)s", service_section["TimeoutStopSec"])
-        needed = 2 * hub.TIMEOUT + camera._EXIT_GRACE
+        needed = service.STOP_GRACE + 2 * hub.TIMEOUT + camera._EXIT_GRACE
 
         assert timeout is not None
         assert int(timeout.group(1)) > needed
+
+    def test_the_watchdog_waits_out_a_step_with_no_frame_and_a_slow_model(
+        self, service_section: dict[str, str]
+    ) -> None:
+        """Silence for half of WatchdogSec means stuck, so that must be longer than the
+        longest step: waiting for a frame, then a model run on a small machine."""
+        watchdog = re.fullmatch(r"(\d+)s", service_section["WatchdogSec"])
+
+        assert service_section["Type"] == "notify"
+        assert watchdog is not None
+        assert int(watchdog.group(1)) / 2 > service.FRAME_WAIT + 5
+
+    def test_the_watchdog_stops_it_as_systemctl_stop_does(
+        self, service_section: dict[str, str]
+    ) -> None:
+        """With SIGTERM, which switches the lights off; SIGABRT would leave them on."""
+        assert service_section["WatchdogSignal"] == "SIGTERM"
 
     def test_sigterm_goes_to_the_service_alone(self, service_section: dict[str, str]) -> None:
         """ffmpeg is closed by the service once the lights are off, not by systemd."""
