@@ -138,6 +138,14 @@ jobs:
           pip install --require-hashes --requirement requirements/dev.txt
           pip install -e . --no-deps
 
+      - name: Install ffmpeg
+        # For the one test that runs a real ffmpeg, to check which frames a rate
+        # lets through; every other test plays a stand-in. One leg is enough.
+        if: matrix.python-version == '3.14'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends ffmpeg
+
       - name: Test
         run: pytest
 
