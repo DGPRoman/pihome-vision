@@ -18,8 +18,8 @@ one again once the list is used up. A run is an object with any of:
 ``garbage``
     ``true`` to write something that is not YUV4MPEG.
 ``stderr``
-    Written to stderr before exiting. ``{url}`` becomes the ``-i`` argument, which is
-    what ffmpeg does with the address it was given.
+    Written to stderr before exiting. ``{url}`` becomes the address ffmpeg was given,
+    from ``-i`` or from the playlist on stdin, as ffmpeg quotes it back.
 ``then``
     ``"exit"`` (the default) or ``"hang"``, to stop writing but stay running.
 ``status``
@@ -43,9 +43,22 @@ def frame(number: int) -> bytes:
     return bytes([number % 256]) * luma + bytes([128]) * (luma // 2)
 
 
+def address(arguments: list[str]) -> str:
+    """What ffmpeg was asked to open: the ``-i`` argument, or the file the concat
+    playlist on stdin names."""
+    given = arguments[arguments.index("-i") + 1]
+    if given != "pipe:0":
+        return given
+    for line in sys.stdin.read().splitlines():
+        if line.startswith("file '") and line.endswith("'"):
+            return line.removeprefix("file '").removesuffix("'").replace("'\\''", "'")
+    return given
+
+
 def main() -> int:
     plan_path = Path(sys.argv[1])
     arguments = sys.argv[2:]
+    url = address(arguments)
     plan = json.loads(plan_path.read_text(encoding="utf-8"))
     counter = plan_path.with_suffix(".count")
     started = int(counter.read_text()) if counter.exists() else 0
@@ -71,7 +84,6 @@ def main() -> int:
     out.flush()
 
     if "stderr" in run:
-        url = arguments[arguments.index("-i") + 1]
         sys.stderr.write(run["stderr"].replace("{url}", url) + "\n")
     if run.get("then") == "hang":
         time.sleep(60)

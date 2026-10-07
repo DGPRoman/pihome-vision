@@ -10,13 +10,15 @@ wrong. :class:`Camera` keeps one running in a thread, starts another when it fai
 holds on to the newest frame only, so a detector that falls behind skips frames rather
 than working through a backlog.
 
-The camera's address carries its password. It goes to ffmpeg and nowhere else: every
-message here is built from :func:`~pihome_vision.redact.mask_url` and
+The camera's address carries its password. It goes to ffmpeg and nowhere else, and
+to ffmpeg on its stdin rather than its command line, which every account on the machine
+can read. Every message here is built from :func:`~pihome_vision.redact.mask_url` and
 :func:`~pihome_vision.redact.scrub`.
 """
 
 from __future__ import annotations
 
+import contextlib
 import enum
 import logging
 import os
@@ -132,27 +134,44 @@ class StreamError(Exception):
 #: Where a camera is reached over the network, so its frames are timed on arrival.
 _NETWORK_SCHEMES: Final = ("rtsp://", "rtsps://", "http://", "https://")
 
+_RTSP_SCHEMES: Final = ("rtsp://", "rtsps://")
+
+#: Characters that cannot go in a line of a playlist.
+_CONTROL: Final = re.compile(r"[\x00-\x1f\x7f]")
+
+#: What ffmpeg may open for a camera on the network: the playlist on its stdin, and the
+#: protocols a camera's address can need.
+_PROTOCOLS: Final = "pipe,rtsp,rtsps,http,https,tls,tcp,udp"
+
 
 def ffmpeg_arguments(source: str, *, fps: float | None = None) -> list[str]:
-    """ffmpeg's arguments for reading ``source``, without the executable."""
+    """ffmpeg's arguments for reading ``source``, without the executable.
+
+    A camera on the network is not among them: every account on the machine can read
+    a program's arguments from ``/proc``, and the address carries the password. ffmpeg
+    reads it from :func:`ffmpeg_playlist` on its stdin instead.
+    """
     arguments = ["-hide_banner", "-nostdin", "-loglevel", "error"]
     if source.startswith("cam:"):
         arguments += ["-f", "v4l2", "-i", f"/dev/video{source.removeprefix('cam:')}"]
-    else:
-        if source.startswith(("rtsp://", "rtsps://")):
-            # UDP loses packets on a busy network, and a lost packet is a smeared frame.
-            arguments += ["-rtsp_transport", "tcp"]
-            # Hand each frame on as soon as it arrives. By default ffmpeg buffers its
-            # input, which on a camera was measured at about 0.4 s: time somebody
-            # spends in the dark before anything here has seen them. RTSP only: over
-            # MPEG-TS, which some HTTP cameras send, it leaves ffmpeg decoding nothing.
+    elif source.startswith(_NETWORK_SCHEMES):
+        if source.startswith(_RTSP_SCHEMES):
+            # Hand each frame on as soon as it arrives, here and in the camera's own
+            # reader in the playlist. By default ffmpeg buffers its input, which on a
+            # camera was measured at about 0.4 s: time somebody spends in the dark
+            # before anything here has seen them. RTSP only: over MPEG-TS, which some
+            # HTTP cameras send, it leaves ffmpeg decoding nothing.
             arguments += ["-fflags", "nobuffer"]
-        if source.startswith(_NETWORK_SCHEMES):
-            # Each frame timed by when it arrived, not by the camera's clock, which on
-            # one camera jumped a third of a second back about once a second: the rate
-            # below took each jump for a restart, and let 11 frames a second through
-            # for 10. Not a file, which arrives as fast as it can be read.
-            arguments += ["-use_wallclock_as_timestamps", "1"]
+        # Each frame timed by when it arrived, not by the camera's clock, which on
+        # one camera jumped a third of a second back about once a second: the rate
+        # below took each jump for a restart, and let 11 frames a second through
+        # for 10. Not a file, which arrives as fast as it can be read.
+        arguments += ["-use_wallclock_as_timestamps", "1", "-flags", "low_delay"]
+        # A playlist of one, read from stdin. Measured on a camera, it costs nothing:
+        # the first frame came as soon, and every frame within 2 ms.
+        arguments += ["-protocol_whitelist", _PROTOCOLS]
+        arguments += ["-f", "concat", "-safe", "0", "-i", "pipe:0"]
+    else:
         arguments += ["-flags", "low_delay", "-i", source]
     # Even sides, because 4:2:0 shares one colour sample between four pixels and the
     # conversion to BGR needs whole blocks. Cropping a pixel costs nothing.
@@ -179,6 +198,26 @@ def ffmpeg_arguments(source: str, *, fps: float | None = None) -> list[str]:
         "yuv4mpegpipe",
         "pipe:1",
     ]
+
+
+def ffmpeg_playlist(source: str) -> bytes | None:
+    """What ffmpeg reads from its stdin for ``source``: a concat playlist naming a
+    camera on the network, with the options for reading it, or ``None`` for any other.
+
+    Raises ``ValueError`` for an address with a control character in it, which would
+    end its line of the playlist and start another.
+    """
+    if not source.startswith(_NETWORK_SCHEMES):
+        return None
+    if _CONTROL.search(source):
+        msg = "a camera's address cannot hold a control character"
+        raise ValueError(msg)
+    # Quoted whole: a quote in it closes the quotes, comes escaped, and opens them again.
+    lines = ["ffconcat version 1.0", "file '" + source.replace("'", "'\\''") + "'"]
+    if source.startswith(_RTSP_SCHEMES):
+        # UDP loses packets on a busy network, and a lost packet is a smeared frame.
+        lines += ["option rtsp_transport tcp", "option fflags nobuffer"]
+    return "".join(f"{line}\n" for line in lines).encode()
 
 
 def to_bgr(raw: bytes, width: int, height: int) -> Frame:
@@ -234,10 +273,11 @@ class Stream:
         self._stall_timeout = timeouts.stall
         self._buffer = bytearray()
         self._stderr: deque[str] = deque(maxlen=_STDERR_LINES)
+        playlist = ffmpeg_playlist(source)
         try:
             self._process = subprocess.Popen(  # noqa: S603  # the arguments are a list, never a shell
                 [*(command or FFMPEG), *ffmpeg_arguments(source, fps=fps)],
-                stdin=subprocess.DEVNULL,
+                stdin=subprocess.DEVNULL if playlist is None else subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
             )
@@ -245,6 +285,8 @@ class Stream:
             raise StreamError(Failure.NO_FFMPEG) from None
         except OSError as exc:
             raise StreamError(Failure.ENDED, f"ffmpeg would not start: {exc.strerror}") from None
+        if playlist is not None:
+            self._hand_over(playlist)
         assert self._process.stdout is not None  # noqa: S101  # PIPE was asked for
         assert self._process.stderr is not None  # noqa: S101
         self._stdout = self._process.stdout
@@ -286,6 +328,17 @@ class Stream:
         self._stdout.close()
         if self._process.stderr is not None:
             self._process.stderr.close()
+
+    def _hand_over(self, playlist: bytes) -> None:
+        """Write the playlist to ffmpeg's stdin, and close it."""
+        assert self._process.stdin is not None  # noqa: S101  # PIPE was asked for
+        # A few hundred bytes, far less than a pipe holds, so this never waits on
+        # ffmpeg. One that has already exited says why on its way out, as ever, and
+        # the pipe is closed whether the write reached it or not.
+        with contextlib.suppress(BrokenPipeError):
+            self._process.stdin.write(playlist)
+        with contextlib.suppress(BrokenPipeError):
+            self._process.stdin.close()
 
     def _collect(self, stderr: IO[bytes]) -> None:
         for line in stderr:

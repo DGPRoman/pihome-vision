@@ -45,6 +45,7 @@ def test_other_camera_sources_are_accepted(url: str) -> None:
         f"viewer:{CAMERA_PASSWORD}@192.168.1.50/stream",
         f"rtsp://viewer:{CAMERA_PASSWORD}@/stream",
         f"rtsp://viewer:{CAMERA_PASSWORD}@[192.168.1.50/stream",
+        f"rtsp://viewer:{CAMERA_PASSWORD}@192.168.1.50/str\neam",
     ],
 )
 def test_a_refused_camera_url_is_not_repeated_back(url: str) -> None:
@@ -52,6 +53,14 @@ def test_a_refused_camera_url_is_not_repeated_back(url: str) -> None:
 
     assert "PIHOME_VISION_CAMERA_URL" in message
     assert CAMERA_PASSWORD not in message
+
+
+@pytest.mark.parametrize("character", ["\n", "\t", "\x00", "\x7f"])
+def test_a_camera_url_with_a_control_character_is_refused(character: str) -> None:
+    """ffmpeg reads the address as one line of a playlist, which a line break would end."""
+    message = refusal(camera_url=f"rtsp://viewer:pass{character}word@192.168.1.50/stream")
+
+    assert "control characters" in message
 
 
 @pytest.mark.parametrize(
