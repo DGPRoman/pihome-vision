@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import os
 import signal
+import socket
 import threading
 import time
 from collections.abc import Callable, Iterator
@@ -360,3 +361,116 @@ def test_a_missing_model_exits_2_before_starting(
     assert __main__.main(["run"]) == 2
     assert "no model" in capsys.readouterr().err
     assert hub.requests == []
+
+
+class Systemd:
+    """Listens where the service is told systemd does, and keeps what it hears and when."""
+
+    def __init__(self, name: str) -> None:
+        self._socket = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+        self._socket.bind(f"\0{name}")
+        self._socket.settimeout(0.02)
+        self._closed = threading.Event()
+        self.heard: list[tuple[float, str]] = []
+        self._thread = threading.Thread(target=self._listen, daemon=True)
+        self._thread.start()
+
+    def _listen(self) -> None:
+        while not self._closed.is_set():
+            try:
+                said = self._socket.recv(256)
+            except TimeoutError:
+                continue
+            self.heard.append((time.monotonic(), said.decode()))
+
+    @property
+    def states(self) -> list[str]:
+        return [state for _, state in self.heard]
+
+    def alive(self, after: float = -1.0, before: float = float("inf")) -> int:
+        """How many times it heard the service was alive between two moments."""
+        return sum(1 for at, state in self.heard if state == "WATCHDOG=1" and after < at < before)
+
+    def hear(self, state: str) -> None:
+        deadline = time.monotonic() + 5
+        while state not in self.states and time.monotonic() < deadline:
+            time.sleep(0.01)
+
+    def close(self) -> None:
+        self._closed.set()
+        self._thread.join()
+        self._socket.close()
+
+
+#: How often the service is asked to say it is alive, in seconds. It looks in on the
+#: pipeline four times in that, and vouches for it if it moved in the last half.
+WATCHDOG = 0.4
+
+
+@pytest.fixture
+def systemd(monkeypatch: pytest.MonkeyPatch) -> Iterator[Systemd]:
+    listener = Systemd(f"pihome-vision-test-{os.getpid()}")
+    monkeypatch.setenv("NOTIFY_SOCKET", f"@pihome-vision-test-{os.getpid()}")
+    monkeypatch.setenv("WATCHDOG_USEC", str(int(WATCHDOG * 1_000_000)))
+    yield listener
+    listener.close()
+
+
+def test_systemd_hears_it_is_ready_then_alive_then_stopping(
+    started: Callable[..., None],
+    terminate: Callable[[Callable[[], bool]], None],
+    systemd: Systemd,
+) -> None:
+    started({"frames": 100, "interval": 0.01, "then": "hang"})
+    terminate(lambda: systemd.alive() >= 3)
+
+    assert __main__.main(["run"]) == 0
+    systemd.hear("STOPPING=1")
+    assert systemd.states[0] == "READY=1"
+    assert systemd.states[-1] == "STOPPING=1"
+    assert set(systemd.states[1:-1]) == {"WATCHDOG=1"}
+
+
+#: When the stand-in model below hung, on the monotonic clock, and what lets it go.
+HUNG: list[float] = []
+UNSTICK = threading.Event()
+
+
+class HangsOnTheSecondLook(SeesSomebody):
+    """Sees somebody once, and the next time hangs, as a model run that never returns
+    would, until let go."""
+
+    def __init__(self, path: Path, **_: object) -> None:
+        self.seen = 0
+
+    def detect(self, frame: Frame) -> list[Detection]:
+        found = super().detect(frame)
+        if found:
+            self.seen += 1
+        if self.seen == 2:  # the second look
+            HUNG.append(time.monotonic())
+            UNSTICK.wait()
+        return found
+
+
+def test_a_hung_pipeline_is_not_vouched_for_and_stopping_still_darkens_its_light(
+    started: Callable[..., None],
+    terminate: Callable[[Callable[[], bool]], None],
+    hub: FakeHub,
+    systemd: Systemd,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    HUNG.clear()
+    UNSTICK.clear()
+    monkeypatch.setattr(service, "STOP_GRACE", 0.2)
+    started({"frames": 100, "interval": 0.01, "then": "hang"}, detector=HangsOnTheSecondLook)
+    # Long enough after hanging for the last word to have gone, and as long again.
+    terminate(lambda: bool(HUNG) and time.monotonic() - HUNG[0] > WATCHDOG * 1.5)
+
+    try:
+        assert __main__.main(["run"]) == 1
+    finally:
+        UNSTICK.set()
+    assert systemd.alive(before=HUNG[0]) >= 1
+    assert systemd.alive(after=HUNG[0] + WATCHDOG * 0.75) == 0
+    assert hub.puts == [(RELAY, True), (RELAY, False)]

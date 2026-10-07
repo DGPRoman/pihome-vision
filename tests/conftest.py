@@ -20,12 +20,16 @@ HUB_KEY = "k" * 48
 
 EXAMPLE_CONFIG = Path(__file__).resolve().parents[1] / "config" / "vision.example.yaml"
 
+#: What systemd tells a service it watches.
+SYSTEMD_VARIABLES = frozenset({"NOTIFY_SOCKET", "WATCHDOG_USEC", "WATCHDOG_PID"})
+
 
 @pytest.fixture(autouse=True)
 def _isolated_environment(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """No test sees the developer's environment, or a .env in the checkout."""
+    """No test sees the developer's environment, or a .env in the checkout, or tells a
+    systemd that happens to be running the tests how the service is doing."""
     for name in list(os.environ):
-        if name.startswith("PIHOME_VISION_"):
+        if name.startswith("PIHOME_VISION_") or name in SYSTEMD_VARIABLES:
             monkeypatch.delenv(name, raising=False)
     monkeypatch.chdir(tmp_path)
 

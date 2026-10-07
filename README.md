@@ -112,7 +112,9 @@ again, for up to five seconds.
 SIGTERM or Ctrl-C switches off every light it switched on, and then it exits. A camera
 that stops sending frames lets its zones come clear and its lights go off in the usual
 time. A configuration it cannot run with, including a model that will not load, exits
-with status 2. Any other failure exits with status 1.
+with status 2. Any other failure exits with status 1. Deployed as below, a pipeline that
+stops moving for 15 seconds, stuck in a model run say, is stopped the same way, with
+its lights switched off, and started again.
 
 ## Deploying
 

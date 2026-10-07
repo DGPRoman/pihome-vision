@@ -4,7 +4,8 @@ triggers, to the lights.
 One :class:`Pipeline` per camera, each in a thread of its own. The camera reads frames
 in its own thread too, and the pipeline always takes the newest, so a detector slower
 than the camera skips frames rather than falling behind. :func:`serve` runs them until
-SIGTERM or SIGINT, then switches off every light the service switched on.
+SIGTERM or SIGINT, then switches off every light the service switched on. Under
+systemd it says when it is ready, and keeps saying it is alive while the pipeline moves.
 """
 
 from __future__ import annotations
@@ -19,6 +20,7 @@ from typing import Final, Protocol
 import cv2
 import numpy as np
 
+from pihome_vision import systemd
 from pihome_vision.config import Camera
 from pihome_vision.detect import Detection, Frame, ModelError
 from pihome_vision.lights import Lights
@@ -34,6 +36,14 @@ MAX_SKIP: Final = 5.0
 
 #: Seconds between log lines saying how the pipeline is doing.
 STATS_SECONDS: Final = 60.0
+
+#: How long stopping waits for the pipeline to finish its step, in seconds. A step takes
+#: at most :data:`FRAME_WAIT` and one model run; one that takes longer is stuck.
+STOP_GRACE: Final = 5.0
+
+#: How often the main thread looks in on the pipeline, in seconds, unless systemd's
+#: watchdog asks for more.
+_TICK: Final = 0.5
 
 #: What a frame is shrunk to, grey, to tell whether it has changed. Small enough that
 #: sensor noise averages out and comparing costs nothing next to the model.
@@ -115,10 +125,14 @@ class Pipeline:
         self._examined = 0
         self._detected = 0
         self._inference = 0.0
+        #: When the last step ended, on the monotonic clock whatever ``clock`` is: what
+        #: tells a pipeline that is moving from one that is stuck.
+        self.stepped_at = time.monotonic()
 
     def run(self, stop: threading.Event) -> None:
         while not stop.is_set():
             self.step()
+            self.stepped_at = time.monotonic()
 
     def step(self) -> None:
         """Take the next frame, or wait :data:`FRAME_WAIT` for one, and act on it."""
@@ -176,10 +190,15 @@ def serve(pipeline: Pipeline, camera: _Source, lights: Lights) -> int:
     """Run ``pipeline`` until SIGTERM or SIGINT, and return the exit status.
 
     On the way out the lights are switched off before the camera is closed, which can
-    take a few seconds, so nothing waits on ffmpeg to leave a light dark.
+    take a few seconds, so nothing waits on ffmpeg to leave a light dark. A pipeline
+    that does not stop within :data:`STOP_GRACE` is left behind, and the status is 1.
     """
     stop = threading.Event()
     failures: list[Exception] = []
+    watchdog = systemd.watchdog_seconds()
+    # At least twice in each of the watchdog's intervals, with time to spare.
+    tick = _TICK if watchdog is None else min(_TICK, watchdog / 4)
+    stuck = False
 
     def work() -> None:
         try:
@@ -199,12 +218,22 @@ def serve(pipeline: Pipeline, camera: _Source, lights: Lights) -> int:
         camera.start()
         thread.start()
         _log.info("watching camera %s", pipeline.camera.id)
-        while not stop.wait(0.5):
-            pass
+        systemd.notify("READY=1")
+        while not stop.wait(tick):
+            # Only while the pipeline moves: systemd restarts one stuck for good.
+            if watchdog is not None and time.monotonic() - pipeline.stepped_at < watchdog / 2:
+                systemd.notify("WATCHDOG=1")
     finally:
         stop.set()
+        systemd.notify("STOPPING=1")
         if thread.is_alive():
-            thread.join()
+            thread.join(STOP_GRACE)
+            stuck = thread.is_alive()
+        if stuck:
+            _log.error(
+                "the pipeline has not moved for %.0f s; stopping without it",
+                time.monotonic() - pipeline.stepped_at,
+            )
         lights.stop()
         camera.stop()
         for sig, handler in previous.items():
@@ -215,6 +244,8 @@ def serve(pipeline: Pipeline, camera: _Source, lights: Lights) -> int:
             _log.error("%s", exc)
             return EXIT_CONFIGURATION_ERROR
         _log.error("the pipeline failed", exc_info=exc)
+        return 1
+    if stuck:
         return 1
     _log.info("stopped")
     return 0
