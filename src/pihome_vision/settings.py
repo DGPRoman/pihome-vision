@@ -45,6 +45,9 @@ DEFAULT_CONFIG_PATH: Final = Path("config/vision.yaml")
 CAMERA_SCHEMES: Final = frozenset({"rtsp", "rtsps", "http", "https"})
 _LOCAL_CAMERA = re.compile(r"cam:\d+")
 
+#: Characters a camera's address cannot hold: ffmpeg reads it as a line of a playlist.
+_CONTROL = re.compile(r"[\x00-\x1f\x7f]")
+
 #: Where plain HTTP to the hub is allowed: addresses that cannot be reached across
 #: the internet, so the key cannot be read off the wire by anybody outside the house.
 #: The same set the Android client allows, 100.64.0.0/10 included for VPNs that hand
@@ -100,6 +103,9 @@ class CameraSettings(BaseSettings):
     def _camera_url(cls, value: SecretStr) -> SecretStr:
         # No message here may quote the value: it is the one with the password in it.
         url = value.get_secret_value().strip()
+        if _CONTROL.search(url):
+            msg = "must be one line, without control characters"
+            raise ValueError(msg)
         if _LOCAL_CAMERA.fullmatch(url):
             return SecretStr(url)
         try:

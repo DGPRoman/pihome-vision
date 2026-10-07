@@ -19,7 +19,7 @@ project with no commercial support and no bug bounty.
 | Camera frames | Held in memory, each replaced by the next. Never sent anywhere, and never written to disk except by `snapshot`, which saves one frame to a file the person running it names, readable only by them. `edit` and `preview` show frames in a window on the machine's own screen |
 | What was detected | Used to decide each trigger and each light, then discarded. No history is kept |
 | A light's state | Switch this relay on, or off. That is all the hub learns |
-| The camera's address and password | Read from the environment and handed to ffmpeg, which reads the camera. Removed from any URL, and from anything ffmpeg says, before it reaches a log line or an error message. ffmpeg is given the address on its command line, which every account on the machine can read from `/proc`: run this where nobody else has an account, or mount `/proc` with `hidepid=invisible` |
+| The camera's address and password | Read from the environment and handed to ffmpeg, which reads the camera. Removed from any URL, and from anything ffmpeg says, before it reaches a log line or an error message. ffmpeg is given the address on its standard input, not its command line, which every account on the machine can read from `/proc` |
 | The hub's relay key | Read from the environment, sent only to the hub's address, and never logged. A redirect is not followed, and a proxy set in the environment is not used, since either would carry the key somewhere else. Plain HTTP is refused unless the hub's address is a private one |
 
 There is no telemetry, and the model is a local file. Nothing is downloaded while the

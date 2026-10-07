@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import http.server
 import logging
 import shutil
 import subprocess
@@ -20,6 +22,7 @@ from pihome_vision.camera import (
     Timeouts,
     classify,
     ffmpeg_arguments,
+    ffmpeg_playlist,
     to_bgr,
 )
 from tests import fake_ffmpeg
@@ -30,18 +33,55 @@ QUICK = Timeouts(open=0.5, stall=0.5, backoff=0.05)
 
 
 class TestArguments:
-    def test_rtsp_goes_over_tcp(self) -> None:
+    @pytest.mark.parametrize(
+        "source",
+        [
+            CAMERA_URL,
+            "rtsps://viewer:hunter2-not-real@192.168.1.50:322/stream2",
+            "http://viewer:hunter2-not-real@192.168.1.50/video.mjpg",
+            "https://viewer:hunter2-not-real@192.168.1.50/video.mjpg",
+        ],
+    )
+    def test_a_network_camera_is_read_from_stdin_not_the_command_line(self, source: str) -> None:
+        arguments = ffmpeg_arguments(source)
+        given = arguments.index("-i")
+
+        assert not any(CAMERA_PASSWORD in argument for argument in arguments)
+        assert arguments[given - 4 : given + 2] == ["-f", "concat", "-safe", "0", "-i", "pipe:0"]
+        assert f"file '{source}'\n".encode() in (ffmpeg_playlist(source) or b"")
+
+    def test_a_network_camera_can_open_nothing_but_its_protocols(self) -> None:
         arguments = ffmpeg_arguments(CAMERA_URL)
+        allowed = arguments[arguments.index("-protocol_whitelist") + 1].split(",")
 
-        assert arguments[arguments.index("-rtsp_transport") + 1] == "tcp"
-        assert arguments.index("-rtsp_transport") < arguments.index("-i")
-        assert arguments[arguments.index("-i") + 1] == CAMERA_URL
+        assert arguments.index("-protocol_whitelist") < arguments.index("-i")
+        assert "file" not in allowed
+        assert {"pipe", "rtsp", "tcp"} <= set(allowed)
 
-    def test_http_is_given_as_it_is(self) -> None:
-        arguments = ffmpeg_arguments("http://192.168.1.50/video.mjpg")
+    def test_rtsp_goes_over_tcp(self) -> None:
+        assert "-rtsp_transport" not in ffmpeg_arguments(CAMERA_URL)
+        assert b"\noption rtsp_transport tcp\n" in (ffmpeg_playlist(CAMERA_URL) or b"")
 
-        assert "-rtsp_transport" not in arguments
-        assert arguments[arguments.index("-i") + 1] == "http://192.168.1.50/video.mjpg"
+    def test_http_is_named_and_nothing_more(self) -> None:
+        source = "http://192.168.1.50/video.mjpg"
+
+        assert ffmpeg_playlist(source) == f"ffconcat version 1.0\nfile '{source}'\n".encode()
+
+    def test_a_quote_in_the_address_is_escaped(self) -> None:
+        playlist = ffmpeg_playlist("rtsp://viewer:it's@192.168.1.50/stream2") or b""
+
+        assert b"\nfile 'rtsp://viewer:it'\\''s@192.168.1.50/stream2'\n" in playlist
+
+    @pytest.mark.parametrize("character", ["\n", "\r", "\x00", "\x7f"])
+    def test_a_control_character_in_the_address_is_refused(self, character: str) -> None:
+        with pytest.raises(ValueError, match="control character") as raised:
+            ffmpeg_playlist(f"rtsp://viewer:a{character}b@192.168.1.50/stream2")
+
+        assert "a" + character + "b" not in str(raised.value)
+
+    @pytest.mark.parametrize("source", ["cam:0", "/var/lib/clips/gate.y4m"])
+    def test_a_local_camera_or_a_file_is_on_the_command_line(self, source: str) -> None:
+        assert ffmpeg_playlist(source) is None
 
     def test_rtsp_is_not_buffered(self) -> None:
         arguments = ffmpeg_arguments(CAMERA_URL)
@@ -51,12 +91,14 @@ class TestArguments:
         assert arguments[arguments.index("-flags") + 1] == "low_delay"
         assert arguments.index("-fflags") < given
         assert arguments.index("-flags") < given
+        assert b"\noption fflags nobuffer\n" in (ffmpeg_playlist(CAMERA_URL) or b"")
 
     def test_http_keeps_its_buffer(self) -> None:
         """Without one, ffmpeg decodes nothing from MPEG-TS, which some cameras send."""
         arguments = ffmpeg_arguments("http://192.168.1.50/video.ts")
 
         assert "-fflags" not in arguments
+        assert b"fflags" not in (ffmpeg_playlist("http://192.168.1.50/video.ts") or b"")
         assert arguments[arguments.index("-flags") + 1] == "low_delay"
 
     @pytest.mark.parametrize("source", [CAMERA_URL, "https://192.168.1.50/video.mjpg"])
@@ -115,6 +157,49 @@ def test_a_rate_takes_the_first_frame_in_each_slot(tmp_path: Path) -> None:
         numbers = [stream.read()[0] for _ in range(20)]
 
     assert numbers == [0, 3, 5, 8, 10, 13, 15, 18, 20, 23, 25, 28, 30, 33, 35, 38, 40, 43, 45, 48]
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="needs a real ffmpeg")
+def test_ffmpeg_reads_the_address_from_stdin(tmp_path: Path) -> None:
+    """A real ffmpeg, given the playlist, logs in to a camera with a quote in its
+    password: the address reached it whole, and was on no command line."""
+    clip = tmp_path / "numbered.y4m"
+    numbered = "color=black:size=64x64:rate=25,format=yuv420p,geq=lum='N+20':cb=128:cr=128"
+    making = ["ffmpeg", "-nostdin", "-loglevel", "error", "-f", "lavfi", "-i", numbered]
+    subprocess.run([*making, "-frames:v", "5", str(clip)], check=True)  # noqa: S603 - fixed
+    password = "it's-not-real"
+    expected = "Basic " + base64.b64encode(f"viewer:{password}".encode()).decode()
+    asked: list[str | None] = []
+
+    class Camera(http.server.BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            asked.append(self.headers.get("Authorization"))
+            if self.headers.get("Authorization") != expected:
+                self.send_response(401)
+                self.send_header("WWW-Authenticate", 'Basic realm="camera"')
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+            body = clip.read_bytes()
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *_: object) -> None:
+            pass
+
+    with http.server.ThreadingHTTPServer(("127.0.0.1", 0), Camera) as server:
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        source = f"http://viewer:{password}@127.0.0.1:{server.server_address[1]}/clip.y4m"
+        try:
+            with Stream(source, timeouts=Timeouts(open=10, stall=10)) as stream:
+                brightness = [stream.read()[0] for _ in range(3)]
+        finally:
+            server.shutdown()
+
+    assert brightness == [20, 21, 22]
+    assert asked[-1] == expected
 
 
 @pytest.mark.parametrize(
