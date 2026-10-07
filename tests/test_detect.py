@@ -13,9 +13,10 @@ from onnxruntime.capi import onnxruntime_pybind11_state
 
 from pihome_vision.config import DetectionModel, Engine
 from pihome_vision.detect import (
-    COCO_CLASSES,
+    COCO,
     DEFAULT_INPUT_SIZE,
     MAX_THREADS,
+    Classes,
     Detection,
     Detector,
     Letterbox,
@@ -25,6 +26,7 @@ from pihome_vision.detect import (
     file_sha256,
     letterbox,
     load,
+    model_classes,
 )
 
 PERSON, BICYCLE, CAR, CAT, TRUCK, DOG = 0, 1, 2, 15, 7, 16
@@ -41,10 +43,11 @@ def end_to_end(*rows: tuple[float, float, float, float, float, int]) -> npt.NDAr
 
 
 def classic(
-    *candidates: tuple[float, float, float, float, int, float],
+    *candidates: tuple[float, float, float, float, int, float], classes: int = COCO.count
 ) -> npt.NDArray[np.float32]:
-    """``(1, 84, N)`` from candidates of centre x, centre y, width, height, class, score."""
-    output = np.zeros((1, 4 + COCO_CLASSES, len(candidates)), dtype=np.float32)
+    """``(1, 4 + classes, N)`` from candidates of centre x, centre y, width, height,
+    class, score."""
+    output = np.zeros((1, 4 + classes, len(candidates)), dtype=np.float32)
     for column, (cx, cy, w, h, class_id, score) in enumerate(candidates):
         output[0, :4, column] = (cx, cy, w, h)
         output[0, 4 + class_id, column] = score
@@ -67,10 +70,11 @@ def field(number: int, value: int | bytes) -> bytes:
     return _varint(number << 3 | 2) + _varint(len(value)) + value
 
 
-def onnx_model(*dims: int | str) -> bytes:
-    """An ONNX model, as far as its size goes: one input of shape ``dims``, a number
-    or, for a dimension of any size, a name. Around it are the fields of a real export
-    that a reader steps over: a node, weights, an output and metadata."""
+def onnx_model(*dims: int | str, names: str | None = None) -> bytes:
+    """An ONNX model, as far as its size and classes go: one input of shape ``dims``, a
+    number or, for a dimension of any size, a name, and ``names`` in its metadata if
+    given. Around them are the fields of a real export that a reader steps over: a node,
+    weights, an output and other metadata."""
     shape = b"".join(
         field(1, field(1, dim) if isinstance(dim, int) else field(2, dim.encode())) for dim in dims
     )
@@ -85,19 +89,24 @@ def onnx_model(*dims: int | str) -> bytes:
         + field(11, image)
         + field(12, field(1, b"output0"))
     )
-    return (
+    model = (
         field(1, 8)  # ir_version
         + field(2, b"pytorch")
         + field(8, field(2, 12))  # opset 12
         + field(7, graph)
         + field(14, field(1, b"imgsz") + field(2, b"[640, 640]"))
     )
+    if names is not None:
+        model += field(14, field(1, b"names") + field(2, names.encode()))
+    return model + field(14, field(1, b"task") + field(2, b"detect"))
 
 
-def constant_model(height: int, width: int, *rows: tuple[float, ...]) -> bytes:
+def constant_model(
+    height: int, width: int, *rows: tuple[float, ...], names: str | None = None
+) -> bytes:
     """A real ONNX model, small enough to write here, that both engines run: it takes
     images of ``height`` and ``width`` and, whatever is in them, gives an NMS-free
-    head of ``rows``."""
+    head of ``rows``. ``names`` are its classes, as Ultralytics writes them."""
 
     def value(name: bytes, dims: tuple[int, ...]) -> bytes:
         shape = b"".join(field(1, field(1, dim)) for dim in dims)
@@ -114,7 +123,10 @@ def constant_model(height: int, width: int, *rows: tuple[float, ...]) -> bytes:
         + field(11, value(b"images", (1, 3, height, width)))
         + field(12, value(b"output0", output.shape))
     )
-    return field(1, 8) + field(8, field(2, 13)) + field(7, graph)  # ir_version, opset 13
+    model = field(1, 8) + field(8, field(2, 13)) + field(7, graph)  # ir_version, opset 13
+    if names is not None:
+        model += field(14, field(1, b"names") + field(2, names.encode()))
+    return model
 
 
 def boxes(found: list[Detection]) -> list[tuple[str, float, float, float, float]]:
@@ -191,6 +203,13 @@ class TestEndToEndHead:
 
         assert decode(output, IDENTITY, confidence=0.35) == []
 
+    def test_class_numbers_are_the_models_own(self) -> None:
+        output = end_to_end((10, 20, 50, 120, 0.9, 0), (100, 100, 300, 200, 0.8, 1))
+
+        found = decode(output, IDENTITY, 0.35, Classes(2, {1: "person"}))
+
+        assert boxes(found) == [("person", 100, 100, 200, 100)]
+
     def test_boxes_come_back_in_frame_pixels(self) -> None:
         fit = Letterbox(scale=0.5, left=0, top=140)
         output = end_to_end((50, 150, 100, 200, 0.9, PERSON))
@@ -228,9 +247,37 @@ class TestClassicHead:
         assert decode(output, IDENTITY, confidence=0.35) == []
 
     def test_an_empty_frame_is_fine(self) -> None:
-        output = np.zeros((1, 4 + COCO_CLASSES, 8400), dtype=np.float32)
+        output = np.zeros((1, 4 + COCO.count, 8400), dtype=np.float32)
 
         assert decode(output, IDENTITY, confidence=0.35) == []
+
+    def test_a_model_of_its_own_classes_has_a_head_as_wide_as_they_are(self) -> None:
+        output = classic(
+            (100, 100, 40, 100, 1, 0.9), (400, 300, 120, 80, 0, 0.8), (50, 50, 20, 20, 2, 0.9),
+            classes=3,
+        )  # fmt: skip
+
+        found = decode(output, IDENTITY, 0.35, Classes(3, {0: "vehicle", 1: "person"}))
+
+        assert boxes(found) == [("person", 80, 50, 40, 100), ("vehicle", 340, 260, 120, 80)]
+
+    def test_of_only_the_classes_used_a_person_is_not_outscored(self) -> None:
+        # The same box: a cat to a model of COCO, a person to one that has no cats.
+        everything = classic((100, 100, 40, 40, PERSON, 0.4), (100, 100, 40, 40, CAT, 0.6))
+        everything[0, 4 + CAT, 1] = 0.0
+        everything[0, 4 + CAT, 0] = 0.6
+        cut = everything[:, [0, 1, 2, 3, 4 + PERSON, 4 + CAR], :]
+
+        assert decode(everything, IDENTITY, 0.35) == []
+        assert boxes(decode(cut, IDENTITY, 0.35, Classes(2, {0: "person", 1: "vehicle"}))) == [
+            ("person", 80, 80, 40, 40)
+        ]
+
+    def test_a_head_not_as_wide_as_the_models_classes_is_refused(self) -> None:
+        output = classic((100, 100, 40, 100, PERSON, 0.9))
+
+        with pytest.raises(ModelError, match=r"classic head of its 2 classes \(1, 6, N\)"):
+            decode(output, IDENTITY, 0.35, Classes(2, {0: "person"}))
 
 
 @pytest.mark.parametrize("shape", [(1, 300, 7), (1, 20, 8400), (8400,), (1, 2, 3, 4)])
@@ -273,6 +320,80 @@ class TestEngines:
         )
 
         assert boxes(found) == [("person", 40, -8, 160, 320)]
+
+    def test_each_runs_a_model_of_its_own_classes(self, tmp_path: Path, engine: Engine) -> None:
+        path = tmp_path / "detector.onnx"
+        rows = (10, 10, 50, 90, 0.9, 0), (100, 100, 140, 180, 0.8, 1)
+        path.write_bytes(constant_model(384, 640, *rows, names="{0: 'car', 1: 'person'}"))
+
+        found = load(DetectionModel(path=path, engine=engine)).detect(
+            np.zeros((1440, 2560, 3), np.uint8)
+        )
+
+        assert [d.category for d in found] == ["vehicle", "person"]
+
+
+class TestClasses:
+    def write(self, tmp_path: Path, names: str | None) -> Path:
+        path = tmp_path / "detector.onnx"
+        path.write_bytes(onnx_model(1, 3, 384, 640, names=names))
+        return path
+
+    @pytest.mark.parametrize(
+        ("names", "classes"),
+        [
+            ("{0: 'person', 1: 'vehicle'}", Classes(2, {0: "person", 1: "vehicle"})),
+            ("{0: 'car', 1: 'dog', 2: 'person'}", Classes(3, {0: "vehicle", 2: "person"})),
+            ("{0: 'Person', 1: 'Truck'}", Classes(2, {0: "person", 1: "vehicle"})),
+            (
+                "{0: 'bicycle', 1: 'motorcycle', 2: 'bus', 3: \"it's a kite\"}",
+                Classes(4, {0: "vehicle", 1: "vehicle", 2: "vehicle"}),
+            ),
+        ],
+    )
+    def test_the_model_file_names_them(self, tmp_path: Path, names: str, classes: Classes) -> None:
+        assert model_classes(self.write(tmp_path, names)) == classes
+
+    def test_a_file_that_names_none_is_taken_for_coco(self, tmp_path: Path) -> None:
+        assert model_classes(self.write(tmp_path, None)) == COCO
+
+    @pytest.mark.parametrize(
+        "names",
+        [
+            "",
+            "not python",
+            "{}",
+            "['person', 'car']",
+            "{1: 'person', 2: 'car'}",
+            "{0: 'person', 1: 2}",
+            "__import__('os').getcwd()",
+            "{0: 'person'" * 1000,
+        ],
+    )
+    def test_names_that_are_not_a_list_of_classes_are_taken_for_none(
+        self, tmp_path: Path, names: str
+    ) -> None:
+        assert model_classes(self.write(tmp_path, names)) == COCO
+
+    @pytest.mark.parametrize("data", [b"", b"not a model at all", b"\xff" * 16])
+    def test_so_is_a_file_that_is_not_a_model(self, tmp_path: Path, data: bytes) -> None:
+        path = tmp_path / "detector.onnx"
+        path.write_bytes(data)
+
+        assert model_classes(path) == COCO
+
+    def test_a_model_of_nothing_a_trigger_watches_for_is_refused(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        fake(monkeypatch, "onnxruntime")
+        path = self.write(tmp_path, "{0: 'cat', 1: 'dog'}")
+
+        with pytest.raises(ModelError, match=r"model of cat, dog: neither a person nor a vehicle"):
+            Detector(path, confidence=0.35)
+
+    @pytest.mark.skipif(not EXPORTED.is_file(), reason="no model in models/")
+    def test_one_exported_from_yolo_names_cocos(self) -> None:
+        assert model_classes(EXPORTED) == COCO
 
 
 class FakeModel:
