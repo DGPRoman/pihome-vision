@@ -12,7 +12,7 @@ import cv2
 import numpy as np
 import pytest
 
-from pihome_vision import __main__, camera, detect
+from pihome_vision import __main__, camera, detect, service
 from pihome_vision.config import Camera
 from pihome_vision.detect import Detection, Frame, ModelError
 from pihome_vision.lights import Lights
@@ -250,6 +250,10 @@ lights:
         monkeypatch.setenv("PIHOME_VISION_HUB_KEY", HUB_KEY)
         monkeypatch.setenv("PIHOME_VISION_CONFIG_PATH", str(config))
         monkeypatch.setattr(camera, "FFMPEG", plan(run))
+        # Once the camera has nothing more, each step waits this long for a frame
+        # before zones come clear and lights go off: a second of it, as in service,
+        # would be most of what these tests take.
+        monkeypatch.setattr(service, "FRAME_WAIT", 0.05)
         if detector is not None:
             monkeypatch.setattr(detect, "Detector", detector)
 
