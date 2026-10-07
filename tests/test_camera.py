@@ -58,6 +58,18 @@ class TestArguments:
         assert "-fflags" not in arguments
         assert arguments[arguments.index("-flags") + 1] == "low_delay"
 
+    @pytest.mark.parametrize("source", [CAMERA_URL, "https://192.168.1.50/video.mjpg"])
+    def test_a_network_camera_is_timed_by_arrival_not_its_own_clock(self, source: str) -> None:
+        arguments = ffmpeg_arguments(source, fps=10)
+        stamped = arguments.index("-use_wallclock_as_timestamps")
+
+        assert arguments[stamped + 1] == "1"
+        assert stamped < arguments.index("-i")
+
+    @pytest.mark.parametrize("source", ["cam:0", "/var/lib/clips/gate.y4m"])
+    def test_a_local_camera_or_a_file_keeps_its_own_timing(self, source: str) -> None:
+        assert "-use_wallclock_as_timestamps" not in ffmpeg_arguments(source, fps=10)
+
     def test_a_local_camera_is_its_video_device(self) -> None:
         arguments = ffmpeg_arguments("cam:2")
 
