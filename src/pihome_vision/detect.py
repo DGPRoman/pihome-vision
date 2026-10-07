@@ -9,14 +9,16 @@ understood, which covers the models Ultralytics exports:
 * Classic, ``(1, 4 + C, N)``: a centre box and one score per class for each of N
   candidates, which still need non-maximum suppression (YOLO11 and earlier).
 
-Class numbers are COCO's. No model is shipped with this project: see docs/models.md.
+The classes are the ones the model's file names, or for a file that names none, the 80
+of COCO. No model is shipped with this project: see docs/models.md.
 """
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import re
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final, Protocol
@@ -31,19 +33,17 @@ from pihome_vision.config import DetectionModel, Engine, ObjectClass
 
 Frame = npt.NDArray[np.uint8]
 
-#: COCO class numbers for what a trigger can watch for. Everything else a model finds,
-#: a cat, a bench, a kite, is dropped as soon as it is decoded.
-CATEGORIES: Final[dict[int, ObjectClass]] = {
-    0: "person",
-    1: "vehicle",  # bicycle
-    2: "vehicle",  # car
-    3: "vehicle",  # motorcycle
-    5: "vehicle",  # bus
-    7: "vehicle",  # truck
+#: What a trigger can watch for, by the name a model gives the class. Everything else a
+#: model finds, a cat, a bench, a kite, is dropped as soon as it is decoded.
+CATEGORIES: Final[dict[str, ObjectClass]] = {
+    "person": "person",
+    "bicycle": "vehicle",
+    "car": "vehicle",
+    "motorcycle": "vehicle",
+    "bus": "vehicle",
+    "truck": "vehicle",
+    "vehicle": "vehicle",
 }
-
-#: Classes in a COCO model, which is what a classic head's width is checked against.
-COCO_CLASSES: Final = 80
 
 #: How much two boxes of one class may overlap before the weaker is taken for a
 #: second look at the same object.
@@ -67,7 +67,8 @@ _PAD: Final = 114
 _E2E_COLUMNS: Final = 6
 
 # Field numbers in ONNX's protobuf schema, onnx.proto, on the way from a model to the
-# shape of its graph's input, and the protobuf wire types that the way passes.
+# shape of its graph's input and to its metadata, and the protobuf wire types that the
+# way passes.
 _MODEL_GRAPH: Final = 7
 _GRAPH_INPUT: Final = 11
 _VALUE_TYPE: Final = 2
@@ -75,6 +76,8 @@ _TYPE_TENSOR: Final = 1
 _TENSOR_SHAPE: Final = 2
 _SHAPE_DIM: Final = 1
 _DIM_VALUE: Final = 1
+_MODEL_METADATA: Final = 14
+_ENTRY_KEY, _ENTRY_VALUE = 1, 2
 _VARINT, _I64, _LEN, _I32 = 0, 1, 2, 5
 
 #: An image input: batch, channels, height, width.
@@ -102,6 +105,22 @@ class Detection:
     @property
     def centre(self) -> tuple[float, float]:
         return self.x + self.width / 2, self.y + self.height / 2
+
+
+@dataclass(frozen=True, slots=True)
+class Classes:
+    """A model's classes, as far as a trigger goes: how many there are, which is what a
+    classic head's width is checked against, and which of their numbers are people or
+    vehicles."""
+
+    count: int
+    wanted: Mapping[int, ObjectClass]
+
+
+#: The 80 classes of COCO, for a model whose file does not name its own.
+COCO: Final = Classes(
+    80, {0: "person", 1: "vehicle", 2: "vehicle", 3: "vehicle", 5: "vehicle", 7: "vehicle"}
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -135,8 +154,10 @@ def letterbox(frame: Frame, size: tuple[int, int]) -> tuple[Frame, Letterbox]:
     return canvas, Letterbox(scale, left, top)
 
 
-def decode(output: npt.NDArray[np.float32], fit: Letterbox, confidence: float) -> list[Detection]:
-    """Turn a model's raw output into the people and vehicles in it.
+def decode(
+    output: npt.NDArray[np.float32], fit: Letterbox, confidence: float, classes: Classes = COCO
+) -> list[Detection]:
+    """Turn the raw output of a model of ``classes`` into the people and vehicles in it.
 
     Raises :class:`ModelError` for an output of neither shape this understands.
     """
@@ -145,22 +166,26 @@ def decode(output: npt.NDArray[np.float32], fit: Letterbox, confidence: float) -
         msg = f"the model's output has shape {output.shape}, which is not a YOLO head"
         raise ModelError(msg)
     if rows.shape[1] == _E2E_COLUMNS:
-        return _decode_end_to_end(rows, fit, confidence)
-    if rows.shape[0] == 4 + COCO_CLASSES:
-        return _decode_classic(rows.T, fit, confidence)
+        return _decode_end_to_end(rows, fit, confidence, classes.wanted)
+    if rows.shape[0] == 4 + classes.count:
+        return _decode_classic(rows.T, fit, confidence, classes.wanted)
     msg = (
         f"the model's output has shape {output.shape}: neither an NMS-free head "
-        f"(1, N, 6) nor a COCO head (1, {4 + COCO_CLASSES}, N)"
+        f"(1, N, 6) nor a classic head of its {classes.count} classes "
+        f"(1, {4 + classes.count}, N)"
     )
     raise ModelError(msg)
 
 
 def _decode_end_to_end(
-    rows: npt.NDArray[np.float32], fit: Letterbox, confidence: float
+    rows: npt.NDArray[np.float32],
+    fit: Letterbox,
+    confidence: float,
+    wanted: Mapping[int, ObjectClass],
 ) -> list[Detection]:
     found = []
     for x1, y1, x2, y2, score, class_id in rows:
-        category = CATEGORIES.get(int(class_id))
+        category = wanted.get(int(class_id))
         if score < confidence or category is None:
             continue
         found.append(Detection(*fit.to_frame(x1, y1, x2, y2), float(score), category))
@@ -168,13 +193,16 @@ def _decode_end_to_end(
 
 
 def _decode_classic(
-    rows: npt.NDArray[np.float32], fit: Letterbox, confidence: float
+    rows: npt.NDArray[np.float32],
+    fit: Letterbox,
+    confidence: float,
+    wanted: Mapping[int, ObjectClass],
 ) -> list[Detection]:
     boxes, scores = rows[:, :4], rows[:, 4:]
     class_ids = scores.argmax(axis=1)
     best = scores[np.arange(len(scores)), class_ids]
-    wanted = np.isin(class_ids, list(CATEGORIES)) & (best >= confidence)
-    boxes, best, class_ids = boxes[wanted], best[wanted], class_ids[wanted]
+    kept = np.isin(class_ids, list(wanted)) & (best >= confidence)
+    boxes, best, class_ids = boxes[kept], best[kept], class_ids[kept]
     if len(boxes) == 0:
         return []
 
@@ -191,9 +219,9 @@ def _decode_classic(
             [float(x1), float(y1), float(x2 - x1), float(y2 - y1)]
             for x1, y1, x2, y2 in corners[mine]
         ]
-        kept = cv2.dnn.NMSBoxes(xywh, best[mine].tolist(), confidence, NMS_IOU)
-        category = CATEGORIES[int(class_id)]
-        for index in np.asarray(kept, dtype=np.int64).flatten():
+        survivors = cv2.dnn.NMSBoxes(xywh, best[mine].tolist(), confidence, NMS_IOU)
+        category = wanted[int(class_id)]
+        for index in np.asarray(survivors, dtype=np.int64).flatten():
             x1, y1, x2, y2 = corners[mine[index]]
             found.append(
                 Detection(*fit.to_frame(x1, y1, x2, y2), float(best[mine[index]]), category)
@@ -333,6 +361,7 @@ class Detector:
         self.input_size = _input_size(path, exported, input_size)
         #: Whether the model's own file said what size it takes.
         self._sized = exported is not None
+        self.classes = model_classes(path)
         self.confidence = confidence
         #: Whether the model has run on a frame. Until it has, a failure is most likely
         #: the configuration's; after, it is not, and restarting may well cure it.
@@ -367,7 +396,7 @@ class Detector:
                     f"input_size must be the size it was exported at"
                 )
             raise ModelError(f"{msg} ({self._runner.describe(exc)})") from None
-        found = decode(output, fit, self.confidence)
+        found = decode(output, fit, self.confidence, self.classes)
         self._ran = True
         return found
 
@@ -435,6 +464,58 @@ def exported_size(path: Path) -> tuple[int, int] | None:
     if not isinstance(height, int) or not isinstance(width, int) or min(height, width) < 1:
         return None
     return height, width
+
+
+def model_classes(path: Path) -> Classes:
+    """The classes the ONNX model at ``path`` names, as Ultralytics writes them into its
+    metadata, or COCO's for a file that names none.
+
+    Raises :class:`ModelError` for a model that names classes, but neither a person nor
+    a vehicle among them.
+    """
+    names = _names(path)
+    if names is None:
+        return COCO
+    wanted = {
+        number: CATEGORIES[name.lower()]
+        for number, name in names.items()
+        if name.lower() in CATEGORIES
+    }
+    if not wanted:
+        listed = ", ".join(names.values())
+        msg = f"{path} is a model of {listed}: neither a person nor a vehicle among them"
+        raise ModelError(msg)
+    return Classes(len(names), wanted)
+
+
+def _names(path: Path) -> dict[int, str] | None:
+    """The class names in the model's metadata, by number from 0, or ``None`` if there
+    are none or they are not that."""
+    try:
+        for number, entry in _fields(memoryview(path.read_bytes())):
+            if number != _MODEL_METADATA or not isinstance(entry, memoryview):
+                continue
+            fields = dict(_fields(entry))
+            key, value = fields.get(_ENTRY_KEY), fields.get(_ENTRY_VALUE)
+            if isinstance(key, memoryview) and bytes(key) == b"names":
+                # Written as a Python dict: {0: 'person', 1: 'bicycle', ...}.
+                if not isinstance(value, memoryview):
+                    return None
+                names = ast.literal_eval(bytes(value).decode())
+                break
+        else:
+            return None
+    except (OSError, IndexError, ValueError, SyntaxError, MemoryError, RecursionError):
+        # UnicodeDecodeError is a ValueError.
+        return None
+    if (
+        not isinstance(names, dict)
+        or not names
+        or set(names) != set(range(len(names)))
+        or not all(isinstance(name, str) for name in names.values())
+    ):
+        return None
+    return {number: names[number] for number in range(len(names))}
 
 
 def _part(message: memoryview, number: int) -> memoryview:

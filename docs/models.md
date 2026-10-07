@@ -7,19 +7,22 @@ own, which this project cannot relicense and which you should read before runnin
 
 ## What it runs
 
-Any ONNX file that has one of the two output heads Ultralytics exports, with the 80
-COCO classes:
+Any ONNX file that has one of the two output heads Ultralytics exports:
 
 | Head | Output shape | Exported by |
 | --- | --- | --- |
 | NMS-free | `(1, N, 6)`: corners, confidence, class | YOLO26 with `end2end=True` |
-| Classic | `(1, 84, N)`: centre box and a score per class | YOLO26 otherwise, YOLO11 and earlier |
+| Classic | `(1, 4 + classes, N)`: centre box and a score per class | YOLO26 otherwise, YOLO11 and earlier |
 
 Which head a YOLO26 export gets has changed between Ultralytics releases; recent ones
 give the classic head unless `end2end=True` is passed. Both run here at the same speed.
 
-Of the 80 classes, only `person` and the vehicles (bicycle, car, motorcycle, bus, truck)
-are used. Everything else is dropped as soon as it is decoded.
+The classes are read from the names Ultralytics writes into the file. `person` is a
+person, and `bicycle`, `car`, `motorcycle`, `bus`, `truck` and `vehicle` are vehicles.
+Everything else is dropped as soon as it is decoded. A file that names no classes is
+taken for one of the 80 COCO classes, in COCO's order, and one that names neither a
+person nor a vehicle is refused. So a model trained on classes of its own runs as well,
+as long as its export names them.
 
 The input size is fixed when a model is exported, and pihome-vision reads it from the
 file. It need not be square: each frame is scaled to fit the model's input, keeping its
