@@ -1,7 +1,8 @@
 """Finding people and vehicles in a frame, with a YOLO-format ONNX model.
 
-The model runs through OpenCV's DNN module, so nothing beyond OpenCV is needed to run
-it. Two output heads are understood, which covers the models Ultralytics exports:
+The model runs through ONNX Runtime, or through OpenCV's DNN module, which needs
+nothing more installed but takes about twice the time and CPU. Two output heads are
+understood, which covers the models Ultralytics exports:
 
 * NMS-free, ``(1, N, 6)``: rows of ``x1, y1, x2, y2, confidence, class``, already
   filtered for overlaps (YOLO26 and later).
@@ -14,16 +15,19 @@ Class numbers are COCO's. No model is shipped with this project: see docs/models
 from __future__ import annotations
 
 import hashlib
+import re
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Final
+from typing import Final, Protocol
 
 import cv2
 import numpy as np
 import numpy.typing as npt
+import onnxruntime
+from onnxruntime.capi import onnxruntime_pybind11_state
 
-from pihome_vision.config import DetectionModel, ObjectClass
+from pihome_vision.config import DetectionModel, Engine, ObjectClass
 
 Frame = npt.NDArray[np.uint8]
 
@@ -46,10 +50,11 @@ COCO_CLASSES: Final = 80
 NMS_IOU: Final = 0.45
 
 #: The most threads a model runs on unless the configuration says otherwise. Past
-#: about this many a 640 model runs no faster, and each thread more only burns CPU:
-#: on a 6-core, 12-thread machine, 8 threads took 35 ms a frame and 12 took 36, on
-#: 0.28 and 0.37 seconds of CPU time.
-MAX_THREADS: Final = 8
+#: about this many a 640 model runs little faster, and each thread more only burns
+#: CPU. On a 6-core, 12-thread machine, ONNX Runtime took 23 ms a frame on 4 threads
+#: and 17 on 8, on 0.18 and 0.36 seconds of CPU time; OpenCV took 26 ms on 8 and 25
+#: on 12, on 0.21 and 0.30 seconds.
+MAX_THREADS: Final[dict[Engine, int]] = {"onnxruntime": 4, "opencv": 8}
 
 #: The square a model exported to take any size is run at, unless the configuration
 #: says otherwise: the size YOLO models are trained at.
@@ -74,6 +79,9 @@ _VARINT, _I64, _LEN, _I32 = 0, 1, 2, 5
 
 #: An image input: batch, channels, height, width.
 _IMAGE_DIMS: Final = 4
+
+#: What ONNX Runtime starts each of its messages with.
+_ORT_CODE: Final = re.compile(r"^\[ONNXRuntimeError\] : \d+ : \w+ : ")
 
 
 class ModelError(Exception):
@@ -201,19 +209,106 @@ def file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+Blob = npt.NDArray[np.float32]
+
+
+class _Runner(Protocol):
+    """A loaded model, as one engine runs it."""
+
+    #: What the engine raises for a model it cannot load or run.
+    errors: tuple[type[Exception], ...]
+
+    def run(self, blob: Blob) -> Blob:
+        """The model's output for one image, as :func:`cv2.dnn.blobFromImage` makes it."""
+        ...
+
+    @staticmethod
+    def describe(exc: Exception) -> str:
+        """One line of what went wrong, from one of :attr:`errors`."""
+        ...
+
+
+class _OnnxRuntime:
+    """ONNX Runtime, on the CPU."""
+
+    errors: tuple[type[Exception], ...] = tuple(
+        error
+        for error in vars(onnxruntime_pybind11_state).values()
+        if isinstance(error, type) and issubclass(error, Exception)
+    )
+
+    def __init__(self, path: Path, threads: int) -> None:
+        options = onnxruntime.SessionOptions()
+        options.intra_op_num_threads = threads
+        # One model, run one image at a time: nothing for a second pool to do. The
+        # threads spin a while after each frame, as ONNX Runtime has them do: told to
+        # sleep instead, on a 4-core machine they took 43 ms a frame, not 29, for 20%
+        # less CPU time.
+        options.inter_op_num_threads = 1
+        self._session = onnxruntime.InferenceSession(
+            str(path), options, providers=["CPUExecutionProvider"]
+        )
+        self._input = self._session.get_inputs()[0].name
+
+    def run(self, blob: Blob) -> Blob:
+        return np.asarray(self._session.run(None, {self._input: blob})[0], dtype=np.float32)
+
+    @staticmethod
+    def describe(exc: Exception) -> str:
+        # "[ONNXRuntimeError] : 2 : INVALID_ARGUMENT : Got invalid dimensions...": the
+        # first line says what, after the code, and the rest which dimension.
+        text = str(exc).strip()
+        if not text:
+            return type(exc).__name__
+        return _ORT_CODE.sub("", text.splitlines()[0])
+
+
+class _OpenCV:
+    """OpenCV's DNN module.
+
+    OpenCV runs every model in the process on one pool of threads, so the last one
+    loaded decides how many there are.
+    """
+
+    errors: tuple[type[Exception], ...] = (cv2.error,)
+
+    def __init__(self, path: Path, threads: int) -> None:
+        self._net = cv2.dnn.readNetFromONNX(str(path))
+        cv2.setNumThreads(threads)
+
+    def run(self, blob: Blob) -> Blob:
+        self._net.setInput(blob)
+        return np.asarray(self._net.forward(), dtype=np.float32)
+
+    @staticmethod
+    def describe(exc: Exception) -> str:
+        # The message is the last line, after where in OpenCV's sources it was raised.
+        text = str(exc).strip()
+        return text.splitlines()[-1] if text else type(exc).__name__
+
+
+_ENGINES: Final[dict[Engine, type[_OnnxRuntime | _OpenCV]]] = {
+    "onnxruntime": _OnnxRuntime,
+    "opencv": _OpenCV,
+}
+
+#: What each engine is called in a message.
+_NAMES: Final[dict[Engine, str]] = {"onnxruntime": "ONNX Runtime", "opencv": "OpenCV"}
+
+
 class Detector:
     """One loaded model. Not to be shared between threads: give each camera its own.
 
-    OpenCV runs every model in the process on one pool of ``threads``, so the last
-    detector made decides how many there are. Unset, it is as many as there are CPUs
-    for this process, up to :data:`MAX_THREADS`.
+    It runs on ``threads``, or unset, on as many as there are CPUs for this process,
+    up to the engine's :data:`MAX_THREADS`.
     """
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 - each is a setting of the model's
         self,
         path: Path,
         *,
         confidence: float,
+        engine: Engine = "onnxruntime",
         input_size: int | None = None,
         sha256: str | None = None,
         threads: int | None = None,
@@ -224,19 +319,20 @@ class Detector:
         if sha256 is not None and (actual := file_sha256(path)) != sha256:
             msg = f"{path} has SHA-256 {actual}, not the {sha256} the configuration expects"
             raise ModelError(msg)
+        if threads is None:
+            threads = min(MAX_THREADS[engine], cv2.getNumberOfCPUs())
+        runner = _ENGINES[engine]
         try:
-            self._net = cv2.dnn.readNetFromONNX(str(path))
-        except cv2.error as exc:
-            msg = f"OpenCV cannot load {path} as an ONNX model: {_first_line(exc)}"
+            self._runner: _Runner = runner(path, threads)
+        except runner.errors as exc:
+            name = _NAMES[engine]
+            msg = f"{name} cannot load {path} as an ONNX model: {runner.describe(exc)}"
             raise ModelError(msg) from None
         exported = exported_size(path)
         #: The width and height frames are scaled into.
         self.input_size = _input_size(path, exported, input_size)
         #: Whether the model's own file said what size it takes.
         self._sized = exported is not None
-        cv2.setNumThreads(
-            threads if threads is not None else min(MAX_THREADS, cv2.getNumberOfCPUs())
-        )
         self.confidence = confidence
         #: Whether the model has run on a frame. Until it has, a failure is most likely
         #: the configuration's; after, it is not, and restarting may well cure it.
@@ -246,14 +342,15 @@ class Detector:
         """The people and vehicles in ``frame``, a BGR image as OpenCV reads one.
 
         Raises :class:`ModelError` if the model will not run on its first frame, and
-        whatever OpenCV raised for a failure after that.
+        whatever the engine raised for a failure after that.
         """
         fitted, fit = letterbox(frame, self.input_size)
-        blob = cv2.dnn.blobFromImage(fitted, 1 / 255.0, swapRB=True, crop=False)
-        self._net.setInput(blob)
+        blob = np.asarray(
+            cv2.dnn.blobFromImage(fitted, 1 / 255.0, swapRB=True, crop=False), dtype=np.float32
+        )
         try:
-            output = self._net.forward()
-        except cv2.error as exc:
+            output = self._runner.run(blob)
+        except self._runner.errors as exc:
             if self._ran:
                 # Not the configuration, which has worked: running short of memory,
                 # say. Reported as a failure, so a service manager restarts it.
@@ -269,8 +366,8 @@ class Detector:
                     f"the model would not run on {size}; "
                     f"input_size must be the size it was exported at"
                 )
-            raise ModelError(f"{msg} ({_first_line(exc)})") from None
-        found = decode(np.asarray(output, dtype=np.float32), fit, self.confidence)
+            raise ModelError(f"{msg} ({self._runner.describe(exc)})") from None
+        found = decode(output, fit, self.confidence)
         self._ran = True
         return found
 
@@ -282,6 +379,7 @@ def load(model: DetectionModel) -> Detector:
     """
     return Detector(
         model.path,
+        engine=model.engine,
         input_size=model.input_size,
         confidence=model.confidence,
         sha256=model.sha256,
@@ -388,8 +486,3 @@ def _varint(message: memoryview, at: int) -> tuple[int, int]:
         if byte < 0x80:  # noqa: PLR2004 - the last byte has no continuation bit
             return value, at
         shift += 7
-
-
-def _first_line(exc: cv2.error) -> str:
-    text = str(exc).strip()
-    return text.splitlines()[-1] if text else type(exc).__name__

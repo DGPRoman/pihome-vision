@@ -22,7 +22,10 @@ model:
   # out, the size the model was exported at, square or not.
   # input_size: 640
   confidence: 0.35
-  # Threads to run it on. Left out, as many as there are CPUs, up to 8.
+  # What runs it: onnxruntime, or opencv, which is slower. docs/models.md compares them.
+  # engine: onnxruntime
+  # Threads to run it on. Left out, as many as there are CPUs, up to 4 for onnxruntime
+  # and 8 for opencv.
   # threads: 4
 
 cameras:

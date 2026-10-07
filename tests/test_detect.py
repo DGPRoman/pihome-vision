@@ -2,13 +2,16 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from pathlib import Path
+from types import SimpleNamespace
 
 import cv2
 import numpy as np
 import numpy.typing as npt
+import onnxruntime
 import pytest
+from onnxruntime.capi import onnxruntime_pybind11_state
 
-from pihome_vision.config import DetectionModel
+from pihome_vision.config import DetectionModel, Engine
 from pihome_vision.detect import (
     COCO_CLASSES,
     DEFAULT_INPUT_SIZE,
@@ -89,6 +92,29 @@ def onnx_model(*dims: int | str) -> bytes:
         + field(7, graph)
         + field(14, field(1, b"imgsz") + field(2, b"[640, 640]"))
     )
+
+
+def constant_model(height: int, width: int, *rows: tuple[float, ...]) -> bytes:
+    """A real ONNX model, small enough to write here, that both engines run: it takes
+    images of ``height`` and ``width`` and, whatever is in them, gives an NMS-free
+    head of ``rows``."""
+
+    def value(name: bytes, dims: tuple[int, ...]) -> bytes:
+        shape = b"".join(field(1, field(1, dim)) for dim in dims)
+        return field(1, name) + field(2, field(1, field(1, 1) + field(2, shape)))
+
+    output = np.array([rows], dtype=np.float32)
+    # dims, data_type float and raw_data, as the value of a Constant node.
+    tensor = b"".join(field(1, dim) for dim in output.shape)
+    tensor += field(2, 1) + field(9, output.tobytes())
+    constant = field(1, b"value") + field(20, 4) + field(5, tensor)
+    graph = (
+        field(1, field(2, b"output0") + field(4, b"Constant") + field(5, constant))
+        + field(2, b"main_graph")
+        + field(11, value(b"images", (1, 3, height, width)))
+        + field(12, value(b"output0", output.shape))
+    )
+    return field(1, 8) + field(8, field(2, 13)) + field(7, graph)  # ir_version, opset 13
 
 
 def boxes(found: list[Detection]) -> list[tuple[str, float, float, float, float]]:
@@ -225,31 +251,96 @@ class TestLoading:
         with pytest.raises(ModelError, match=r"not the 0+ the configuration expects"):
             Detector(path, input_size=640, confidence=0.35, sha256="0" * 64)
 
-    def test_a_file_that_is_not_onnx_is_refused(self, tmp_path: Path) -> None:
+    def test_a_file_that_is_not_onnx_is_refused(self, tmp_path: Path, engine: Engine) -> None:
         path = tmp_path / "detector.onnx"
         path.write_bytes(b"\x00garbage" * 64)
 
-        with pytest.raises(ModelError, match="cannot load"):
-            Detector(path, input_size=640, confidence=0.35, sha256=file_sha256(path))
+        with pytest.raises(ModelError, match=r"(ONNX Runtime|OpenCV) cannot load") as raised:
+            Detector(path, engine=engine, input_size=640, confidence=0.35, sha256=file_sha256(path))
+        assert "[ONNXRuntimeError]" not in str(raised.value)
 
 
-class FakeNet:
-    """Stands in for a loaded network: runs ``works`` times, then fails as OpenCV does."""
+class TestEngines:
+    def test_onnx_runtime_unless_the_configuration_says_otherwise(self) -> None:
+        assert DetectionModel(path=Path("detector.onnx")).engine == "onnxruntime"
 
-    def __init__(self, works: int) -> None:
+    def test_each_runs_a_real_model(self, tmp_path: Path, engine: Engine) -> None:
+        path = tmp_path / "detector.onnx"
+        path.write_bytes(constant_model(384, 640, (10, 10, 50, 90, 0.9, PERSON)))
+
+        found = load(DetectionModel(path=path, engine=engine)).detect(
+            np.zeros((1440, 2560, 3), np.uint8)
+        )
+
+        assert boxes(found) == [("person", 40, -8, 160, 320)]
+
+
+class FakeModel:
+    """Stands in for a model as either engine loads it: runs ``works`` times, then
+    fails as that engine does."""
+
+    def __init__(self, works: int, error: Exception) -> None:
         self.works = works
+        self.error = error
         #: The shape of each input it was given.
         self.inputs: list[tuple[int, ...]] = []
+        #: The threads it was loaded to run on.
+        self.threads: int | None = None
 
-    def setInput(self, blob: npt.NDArray[np.float32]) -> None:  # noqa: N802 - OpenCV's name
+    def _run(self, blob: npt.NDArray[np.float32]) -> npt.NDArray[np.float32]:
         self.inputs.append(blob.shape)
-
-    def forward(self) -> npt.NDArray[np.float32]:
         if self.works == 0:
-            msg = "Insufficient memory"
-            raise cv2.error(msg)
+            raise self.error
         self.works -= 1
         return end_to_end((10, 10, 50, 90, 0.9, PERSON))
+
+    # As OpenCV's network.
+
+    def setInput(self, blob: npt.NDArray[np.float32]) -> None:  # noqa: N802 - OpenCV's name
+        self._blob = blob
+
+    def forward(self) -> npt.NDArray[np.float32]:
+        return self._run(self._blob)
+
+    # As an ONNX Runtime session.
+
+    def get_inputs(self) -> list[SimpleNamespace]:
+        return [SimpleNamespace(name="images")]
+
+    def run(
+        self, _outputs: None, feeds: dict[str, npt.NDArray[np.float32]]
+    ) -> list[npt.NDArray[np.float32]]:
+        return [self._run(feeds["images"])]
+
+
+def fake(monkeypatch: pytest.MonkeyPatch, engine: Engine, works: int = 1) -> FakeModel:
+    """Has ``engine`` load every model as a :class:`FakeModel`, and returns it."""
+    if engine == "opencv":
+        model = FakeModel(works, cv2.error("Insufficient memory"))
+        monkeypatch.setattr(cv2.dnn, "readNetFromONNX", lambda *_: model)
+        monkeypatch.setattr(cv2, "setNumThreads", lambda count: setattr(model, "threads", count))
+        return model
+
+    model = FakeModel(
+        works,
+        onnxruntime_pybind11_state.RuntimeException(
+            "[ONNXRuntimeError] : 6 : RUNTIME_EXCEPTION : Insufficient memory"
+        ),
+    )
+
+    def session(_path: str, options: onnxruntime.SessionOptions, providers: list[str]) -> FakeModel:
+        assert providers == ["CPUExecutionProvider"]
+        model.threads = options.intra_op_num_threads
+        return model
+
+    monkeypatch.setattr(onnxruntime, "InferenceSession", session)
+    return model
+
+
+@pytest.fixture(params=["onnxruntime", "opencv"])
+def engine(request: pytest.FixtureRequest) -> Engine:
+    name: Engine = request.param
+    return name
 
 
 @pytest.fixture
@@ -262,72 +353,69 @@ def fake_model(tmp_path: Path) -> Path:
 class TestFailing:
     FRAME = np.zeros((640, 640, 3), dtype=np.uint8)
 
-    def detector(self, path: Path, monkeypatch: pytest.MonkeyPatch, works: int) -> Detector:
-        net = FakeNet(works)
-        monkeypatch.setattr(cv2.dnn, "readNetFromONNX", lambda *_: net)
-        return Detector(path, input_size=640, confidence=0.35)
-
     def test_a_model_that_will_not_run_at_all_is_the_configurations_fault(
-        self, fake_model: Path, monkeypatch: pytest.MonkeyPatch
+        self, fake_model: Path, monkeypatch: pytest.MonkeyPatch, engine: Engine
     ) -> None:
-        detector = self.detector(fake_model, monkeypatch, works=0)
+        fake(monkeypatch, engine, works=0)
+        detector = Detector(fake_model, engine=engine, input_size=640, confidence=0.35)
 
-        with pytest.raises(ModelError, match="input_size must be the size it was exported at"):
+        with pytest.raises(
+            ModelError,
+            match=r"input_size must be the size it was exported at \(Insufficient memory\)",
+        ):
             detector.detect(self.FRAME)
 
     def test_so_is_one_that_says_its_size_and_will_not_run_at_it(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, engine: Engine
     ) -> None:
         path = tmp_path / "detector.onnx"
         path.write_bytes(onnx_model(1, 3, 640, 640))
-        detector = self.detector(path, monkeypatch, works=0)
+        fake(monkeypatch, engine, works=0)
+        detector = Detector(path, engine=engine, confidence=0.35)
 
         with pytest.raises(ModelError, match=r"640x640 input, the size it was exported at \("):
             detector.detect(self.FRAME)
 
     def test_a_failure_after_it_has_run_is_not(
-        self, fake_model: Path, monkeypatch: pytest.MonkeyPatch
+        self, fake_model: Path, monkeypatch: pytest.MonkeyPatch, engine: Engine
     ) -> None:
-        detector = self.detector(fake_model, monkeypatch, works=1)
+        model = fake(monkeypatch, engine, works=1)
+        detector = Detector(fake_model, engine=engine, input_size=640, confidence=0.35)
 
         assert len(detector.detect(self.FRAME)) == 1
-        with pytest.raises(cv2.error, match="Insufficient memory") as raised:
+        with pytest.raises(type(model.error), match="Insufficient memory") as raised:
             detector.detect(self.FRAME)
         assert not isinstance(raised.value, ModelError)
 
 
 class TestThreads:
-    @pytest.fixture
-    def pool(self, monkeypatch: pytest.MonkeyPatch) -> list[int]:
-        """The sizes OpenCV's thread pool is set to, on a machine with 12 CPUs."""
-        sizes: list[int] = []
-        monkeypatch.setattr(cv2.dnn, "readNetFromONNX", lambda *_: FakeNet(works=1))
-        monkeypatch.setattr(cv2, "getNumberOfCPUs", lambda: 12)
-        monkeypatch.setattr(cv2, "setNumThreads", sizes.append)
-        return sizes
-
     def test_unless_told_it_runs_on_every_cpu_up_to_a_few(
-        self, fake_model: Path, pool: list[int], monkeypatch: pytest.MonkeyPatch
+        self, fake_model: Path, monkeypatch: pytest.MonkeyPatch, engine: Engine
     ) -> None:
-        Detector(fake_model, input_size=640, confidence=0.35)
-        monkeypatch.setattr(cv2, "getNumberOfCPUs", lambda: 4)
-        Detector(fake_model, input_size=640, confidence=0.35)
+        model = fake(monkeypatch, engine)
+        threads = []
+        for cpus in (12, 2):
+            monkeypatch.setattr(cv2, "getNumberOfCPUs", lambda cpus=cpus: cpus)
+            Detector(fake_model, engine=engine, input_size=640, confidence=0.35)
+            threads.append(model.threads)
 
-        assert pool == [MAX_THREADS, 4]
+        assert threads == [MAX_THREADS[engine], 2]
 
-    def test_the_configuration_says_how_many(self, fake_model: Path, pool: list[int]) -> None:
-        model = DetectionModel(path=fake_model, threads=12)
+    def test_the_configuration_says_how_many(
+        self, fake_model: Path, monkeypatch: pytest.MonkeyPatch, engine: Engine
+    ) -> None:
+        model = fake(monkeypatch, engine)
 
-        load(model)
+        load(DetectionModel(path=fake_model, engine=engine, threads=12))
 
-        assert pool == [12]
+        assert model.threads == 12
 
 
 class TestInputSize:
     @pytest.fixture
     def model(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Callable[..., Path]:
         """Writes a model with an input of the given shape, which loads as one that runs."""
-        monkeypatch.setattr(cv2.dnn, "readNetFromONNX", lambda *_: FakeNet(works=1))
+        fake(monkeypatch, "onnxruntime")
 
         def write(*dims: int | str) -> Path:
             path = tmp_path / "detector.onnx"
@@ -398,8 +486,7 @@ class TestInputSize:
     def test_a_wide_frame_goes_to_a_wide_model_and_its_boxes_come_back(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        net = FakeNet(works=1)
-        monkeypatch.setattr(cv2.dnn, "readNetFromONNX", lambda *_: net)
+        net = fake(monkeypatch, "onnxruntime")
         path = tmp_path / "detector.onnx"
         path.write_bytes(onnx_model(1, 3, 384, 640))
 

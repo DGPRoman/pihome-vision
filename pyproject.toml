@@ -37,6 +37,9 @@ dependencies = [
   # Also what OpenCV hands frames back as; pinned here because this code uses it
   # directly, not only through cv2.
   "numpy==2.5.3",
+  # Runs the model in about half the time and CPU that OpenCV's own DNN module does,
+  # for the same output. OpenCV still reads the camera and prepares each frame.
+  "onnxruntime==1.30.0",
   "pydantic==2.13.5",
   "pydantic-settings==2.15.0",
   "PyYAML==6.0.3",
@@ -112,6 +115,11 @@ strict = true
 warn_unreachable = true
 enable_error_code = ["ignore-without-code", "redundant-expr", "truthy-bool"]
 files = ["src", "tests"]
+
+[[tool.mypy.overrides]]
+# ONNX Runtime ships no type information.
+module = ["onnxruntime", "onnxruntime.*"]
+ignore_missing_imports = true
 
 [tool.uv]
 # The lockfiles are only reproducible against the resolver that produced them:
