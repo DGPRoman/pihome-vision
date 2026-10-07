@@ -323,14 +323,14 @@ def _run(_: argparse.Namespace) -> int:
     except detect.ModelError as exc:
         sys.stderr.write(f"pihome-vision: {exc}\n")
         return EXIT_CONFIGURATION_ERROR
-    hub = Hub(settings.hub_url, settings.hub_key.get_secret_value())
     sun = Sun(config.location) if config.location is not None else None
-    lights = Lights(config.lights, hub, darkness=sun)
-    # One camera: the configuration allows no more yet.
-    (watched,) = config.cameras
-    source = camera.Camera(settings.camera_url.get_secret_value(), fps=watched.fps)
-    pipeline = service.Pipeline(watched, source, detector, lights)
-    return service.serve(pipeline, source, lights)
+    with Hub(settings.hub_url, settings.hub_key.get_secret_value()) as hub:
+        lights = Lights(config.lights, hub, darkness=sun)
+        # One camera: the configuration allows no more yet.
+        (watched,) = config.cameras
+        source = camera.Camera(settings.camera_url.get_secret_value(), fps=watched.fps)
+        pipeline = service.Pipeline(watched, source, detector, lights)
+        return service.serve(pipeline, source, lights)
 
 
 def build_parser() -> argparse.ArgumentParser:

@@ -47,12 +47,12 @@ class Counting:
 @pytest.fixture
 def hub() -> Iterator[Hub]:
     """The real hub, with every relay off before and after."""
-    client = Hub(ORIGIN, KEY)
-    for relay in ("gate-light", "porch-light"):
-        client.switch(relay, on=False)
-    yield client
-    for relay in ("gate-light", "porch-light"):
-        client.switch(relay, on=False)
+    with Hub(ORIGIN, KEY) as client:
+        for relay in ("gate-light", "porch-light"):
+            client.switch(relay, on=False)
+        yield client
+        for relay in ("gate-light", "porch-light"):
+            client.switch(relay, on=False)
 
 
 def come_and_go(lights: Lights) -> None:
@@ -83,8 +83,8 @@ def test_a_relay_the_hub_does_not_have(hub: Hub) -> None:
 
 
 def test_a_wrong_key(hub: Hub) -> None:
-    with pytest.raises(HubError) as caught:
-        Hub(ORIGIN, "w" * 48).read(RELAY)
+    with Hub(ORIGIN, "w" * 48) as wrong, pytest.raises(HubError) as caught:
+        wrong.read(RELAY)
 
     assert caught.value.refusal is Refusal.UNAUTHORIZED
 
@@ -111,11 +111,12 @@ def test_a_light_already_on_is_left_on(hub: Hub) -> None:
 
 
 def test_a_wrong_key_is_tried_once(hub: Hub) -> None:
-    counting = Counting(Hub(ORIGIN, "w" * 48))
-    lights = lights_for(counting)
+    with Hub(ORIGIN, "w" * 48) as wrong:
+        counting = Counting(wrong)
+        lights = lights_for(counting)
 
-    come_and_go(lights)
-    come_and_go(lights)
+        come_and_go(lights)
+        come_and_go(lights)
 
     assert counting.requests == 1
     assert hub.read(RELAY) is False
