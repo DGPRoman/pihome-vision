@@ -22,7 +22,7 @@ import cv2
 import numpy as np
 import numpy.typing as npt
 
-from pihome_vision.config import ObjectClass
+from pihome_vision.config import DetectionModel, ObjectClass
 
 Frame = npt.NDArray[np.uint8]
 
@@ -43,6 +43,12 @@ COCO_CLASSES: Final = 80
 #: How much two boxes of one class may overlap before the weaker is taken for a
 #: second look at the same object.
 NMS_IOU: Final = 0.45
+
+#: The most threads a model runs on unless the configuration says otherwise. Past
+#: about this many a 640 model runs no faster, and each thread more only burns CPU:
+#: on a 6-core, 12-thread machine, 8 threads took 35 ms a frame and 12 took 36, on
+#: 0.28 and 0.37 seconds of CPU time.
+MAX_THREADS: Final = 8
 
 #: The grey YOLO pads a letterboxed frame with, as it was trained.
 _PAD: Final = 114
@@ -175,10 +181,21 @@ def file_sha256(path: Path) -> str:
 
 
 class Detector:
-    """One loaded model. Not to be shared between threads: give each camera its own."""
+    """One loaded model. Not to be shared between threads: give each camera its own.
+
+    OpenCV runs every model in the process on one pool of ``threads``, so the last
+    detector made decides how many there are. Unset, it is as many as there are CPUs
+    for this process, up to :data:`MAX_THREADS`.
+    """
 
     def __init__(
-        self, path: Path, *, input_size: int, confidence: float, sha256: str | None = None
+        self,
+        path: Path,
+        *,
+        input_size: int,
+        confidence: float,
+        sha256: str | None = None,
+        threads: int | None = None,
     ) -> None:
         if not path.is_file():
             msg = f"there is no model at {path}; docs/models.md says where to get one"
@@ -191,6 +208,9 @@ class Detector:
         except cv2.error as exc:
             msg = f"OpenCV cannot load {path} as an ONNX model: {_first_line(exc)}"
             raise ModelError(msg) from None
+        cv2.setNumThreads(
+            threads if threads is not None else min(MAX_THREADS, cv2.getNumberOfCPUs())
+        )
         self.input_size = input_size
         self.confidence = confidence
         #: Whether the model has run on a frame. Until it has, a failure is most likely
@@ -223,6 +243,20 @@ class Detector:
         found = decode(np.asarray(output, dtype=np.float32), fit, self.confidence)
         self._ran = True
         return found
+
+
+def load(model: DetectionModel) -> Detector:
+    """The model the configuration describes, loaded to run as it says.
+
+    Raises :class:`ModelError` as :class:`Detector` does.
+    """
+    return Detector(
+        model.path,
+        input_size=model.input_size,
+        confidence=model.confidence,
+        sha256=model.sha256,
+        threads=model.threads,
+    )
 
 
 def _first_line(exc: cv2.error) -> str:

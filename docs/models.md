@@ -21,6 +21,11 @@ are used. Everything else is dropped as soon as it is decoded.
 The input size is fixed when a model is exported. `model.input_size` in `vision.yaml`
 must be that size, and pihome-vision says so if it is not.
 
+The model runs on as many threads as there are CPUs, up to 8. More make a 640 model no
+faster, and only keep more cores busy: on a 6-core, 12-thread desktop, 8 threads ran a
+frame in 35 ms and 12 in 36, but 12 used a third more CPU time. `model.threads` sets
+another number, fewer to leave room on a machine that does other work.
+
 ## Licences
 
 The code in this repository is MIT. A model is not code from this repository, and its

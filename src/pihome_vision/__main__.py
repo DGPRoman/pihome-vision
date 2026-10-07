@@ -74,14 +74,9 @@ def _run_model(model: DetectionModel, frame: Frame) -> tuple[list[Detection], fl
 
     Raises :class:`~pihome_vision.detect.ModelError` for a model that cannot run.
     """
-    from pihome_vision.detect import Detector  # noqa: PLC0415
+    from pihome_vision import detect  # noqa: PLC0415
 
-    detector = Detector(
-        model.path,
-        input_size=model.input_size,
-        confidence=model.confidence,
-        sha256=model.sha256,
-    )
+    detector = detect.load(model)
     detector.detect(frame)  # the first run includes setting the network up
     started = time.perf_counter()
     found = detector.detect(frame)
@@ -251,14 +246,8 @@ def _preview(_: argparse.Namespace) -> int:
     from pihome_vision import camera, detect, gui  # noqa: PLC0415
 
     settings, config = _load()
-    model = config.model
     try:
-        detector = detect.Detector(
-            model.path,
-            input_size=model.input_size,
-            confidence=model.confidence,
-            sha256=model.sha256,
-        )
+        detector = detect.load(config.model)
     except detect.ModelError as exc:
         sys.stderr.write(f"pihome-vision: {exc}\n")
         return EXIT_CONFIGURATION_ERROR
@@ -312,14 +301,8 @@ def _run(_: argparse.Namespace) -> int:
 
     settings, config = _load()
     _configure_logging()
-    model = config.model
     try:
-        detector = detect.Detector(
-            model.path,
-            input_size=model.input_size,
-            confidence=model.confidence,
-            sha256=model.sha256,
-        )
+        detector = detect.load(config.model)
     except detect.ModelError as exc:
         sys.stderr.write(f"pihome-vision: {exc}\n")
         return EXIT_CONFIGURATION_ERROR
