@@ -58,6 +58,20 @@ def test_a_bad_environment_exits_2_without_the_password(
     assert CAMERA_PASSWORD not in captured.err + captured.out
 
 
+@pytest.mark.usefixtures("without_the_hub")
+@pytest.mark.parametrize("command", ["validate", "run"])
+def test_the_commands_that_switch_lights_need_the_hub(
+    command: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    with pytest.raises(SystemExit) as exited:
+        main([command])
+
+    assert exited.value.code == EXIT_CONFIGURATION_ERROR
+    err = capsys.readouterr().err
+    assert "PIHOME_VISION_HUB_URL" in err
+    assert "PIHOME_VISION_HUB_KEY" in err
+
+
 def test_a_bad_config_file_exits_2_naming_the_field(
     environment: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -156,7 +170,7 @@ def quick_check(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(detect, "Detector", _CheckDetector)
 
 
-@pytest.mark.usefixtures("environment", "quick_check")
+@pytest.mark.usefixtures("without_the_hub", "quick_check")
 def test_check_reports_the_camera_and_the_model(
     plan: Plan, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

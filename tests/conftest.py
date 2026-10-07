@@ -42,6 +42,20 @@ def environment(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     return config
 
 
+@pytest.fixture(params=["missing", "wrong"])
+def without_the_hub(
+    request: pytest.FixtureRequest, environment: Path, monkeypatch: pytest.MonkeyPatch
+) -> Path:
+    """The environment for the camera alone: no hub, or one so wrong that the service
+    would refuse to start."""
+    for name in ("PIHOME_VISION_HUB_URL", "PIHOME_VISION_HUB_KEY"):
+        if request.param == "missing":
+            monkeypatch.delenv(name)
+        else:
+            monkeypatch.setenv(name, "x")
+    return environment
+
+
 #: Writes the stand-in ffmpeg's script, and returns the command that plays it.
 Plan = Callable[..., list[str]]
 

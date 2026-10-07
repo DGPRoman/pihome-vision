@@ -69,8 +69,10 @@ $ cp .env.example .env
 $ cp config/vision.example.yaml config/vision.yaml
 ```
 
-Put the camera's address, the hub's and its relay key in `.env`, and a model in
-`config/vision.yaml` (see [the model](#the-model)). Then, from the same directory:
+Put the camera's address in `.env`, and a model in `config/vision.yaml` (see
+[the model](#the-model)). The hub's address and its relay key are needed only by
+`validate` and `run`, so a desktop used only to draw zones need not hold the key to
+every relay. Then, from the same directory:
 
 1. `pihome-vision check` connects to the camera and runs the model on one frame.
 2. `pihome-vision snapshot gate.jpg` saves a frame, readable only by you, to draw on

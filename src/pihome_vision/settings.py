@@ -75,8 +75,11 @@ def _is_private_host(host: str) -> bool:
     return any(address in network for network in _PRIVATE_NETWORKS)
 
 
-class Settings(BaseSettings):
-    """What the service reads from its environment."""
+class CameraSettings(BaseSettings):
+    """What a command that only looks through the camera reads from its environment.
+
+    Not the hub: a desktop used to draw zones need not hold the key to every relay.
+    """
 
     model_config = SettingsConfigDict(
         env_prefix=ENV_PREFIX,
@@ -89,11 +92,6 @@ class Settings(BaseSettings):
     #: The camera, with its credentials: ``rtsp://user:password@host/path``, an
     #: ``http(s)`` stream, or ``cam:N`` for a webcam on this machine.
     camera_url: SecretStr
-    #: The hub's origin, nothing after it: ``https://hub.example``.
-    hub_url: str
-    #: The hub's relay key. It opens every relay, which is why it is a secret here
-    #: and why SECURITY.md says how to keep it.
-    hub_key: SecretStr
     #: Everything that is not a secret.
     config_path: Path = DEFAULT_CONFIG_PATH
 
@@ -117,6 +115,16 @@ class Settings(BaseSettings):
             msg = "names no host"
             raise ValueError(msg)
         return SecretStr(url)
+
+
+class Settings(CameraSettings):
+    """What the service reads from its environment: the camera's, and the hub's."""
+
+    #: The hub's origin, nothing after it: ``https://hub.example``.
+    hub_url: str
+    #: The hub's relay key. It opens every relay, which is why it is a secret here
+    #: and why SECURITY.md says how to keep it.
+    hub_key: SecretStr
 
     @field_validator("hub_url")
     @classmethod
