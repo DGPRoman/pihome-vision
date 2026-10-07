@@ -14,6 +14,7 @@ import numpy as np
 import pytest
 
 from pihome_vision import __main__, camera, detect, service
+from pihome_vision.camera import Picture
 from pihome_vision.config import Camera
 from pihome_vision.detect import Detection, Frame, ModelError
 from pihome_vision.lights import Lights
@@ -29,6 +30,11 @@ EVERYWHERE = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]
 
 def picture(value: int, width: int = 64, height: int = 48) -> Frame:
     return np.full((height, width, 3), value, dtype=np.uint8)
+
+
+def seen(value: int) -> Picture:
+    """:func:`picture` as the camera hands it out."""
+    return Picture.from_bgr(picture(value))
 
 
 #: Somebody standing in the middle of any frame at least 4 by 2.
@@ -52,13 +58,13 @@ class Frames:
         self.step = step
         self.frames_received = 0
 
-    def next_frame(self, after: int, timeout: float) -> tuple[int, Frame] | None:
+    def next_frame(self, after: int, timeout: float) -> tuple[int, Picture] | None:
         if self.frames_received >= len(self.frames):
             self.clock.now += timeout
             return None
         self.clock.now += self.step
         self.frames_received += 1
-        return self.frames_received, self.frames[self.frames_received - 1]
+        return self.frames_received, Picture.from_bgr(self.frames[self.frames_received - 1])
 
 
 class Counting:
@@ -97,27 +103,35 @@ class TestStillness:
     def test_with_no_threshold_every_frame_is_detected_on(self) -> None:
         still = Stillness(0)
 
-        assert all(still.changed(picture(50), t) for t in range(5))
+        assert all(still.changed(seen(50), t) for t in range(5))
 
     def test_a_still_picture_is_skipped(self) -> None:
         still = Stillness(2)
 
-        assert still.changed(picture(50), 0.0)
-        assert not still.changed(picture(50), 0.2)
-        assert not still.changed(picture(51), 0.4)
+        assert still.changed(seen(50), 0.0)
+        assert not still.changed(seen(50), 0.2)
+        assert not still.changed(seen(51), 0.4)
 
     def test_a_change_is_detected_on(self) -> None:
         still = Stillness(2)
-        still.changed(picture(50), 0.0)
+        still.changed(seen(50), 0.0)
 
-        assert still.changed(picture(60), 0.2)
+        assert still.changed(seen(60), 0.2)
+
+    @pytest.mark.parametrize(("threshold", "changed"), [(18, True), (22, False)])
+    def test_the_threshold_is_in_levels_of_grey(self, threshold: float, changed: bool) -> None:
+        """20 levels of grey are 17 steps of the camera's brightness, which runs 16-235."""
+        still = Stillness(threshold)
+        still.changed(seen(50), 0.0)
+
+        assert still.changed(seen(70), 0.2) is changed
 
     def test_a_slow_change_adds_up(self) -> None:
         """Each frame one level brighter than the last, which alone is not enough."""
         still = Stillness(2)
-        still.changed(picture(50), 0.0)
+        still.changed(seen(50), 0.0)
 
-        assert [still.changed(picture(50 + n), n * 0.2) for n in range(1, 4)] == [
+        assert [still.changed(seen(50 + n), n * 0.2) for n in range(1, 4)] == [
             False,
             True,
             False,
@@ -125,10 +139,10 @@ class TestStillness:
 
     def test_however_still_it_is_looked_at_now_and_then(self) -> None:
         still = Stillness(2)
-        still.changed(picture(50), 0.0)
+        still.changed(seen(50), 0.0)
 
-        assert not still.changed(picture(50), MAX_SKIP - 0.1)
-        assert still.changed(picture(50), MAX_SKIP)
+        assert not still.changed(seen(50), MAX_SKIP - 0.1)
+        assert still.changed(seen(50), MAX_SKIP)
 
 
 class TestPipeline:

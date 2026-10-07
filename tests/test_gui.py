@@ -16,6 +16,7 @@ import pytest
 import yaml
 
 from pihome_vision import __main__, camera, detect, gui
+from pihome_vision.camera import Picture
 from pihome_vision.config import EXIT_CONFIGURATION_ERROR, Camera, load_config
 from pihome_vision.detect import Detection, Frame
 from pihome_vision.sketch import ENTER, ESCAPE
@@ -164,11 +165,11 @@ class Frames:
         self.frames = frames
         self.frames_received = 0
 
-    def next_frame(self, after: int, timeout: float) -> tuple[int, Frame] | None:
+    def next_frame(self, after: int, timeout: float) -> tuple[int, Picture] | None:
         if self.frames_received >= len(self.frames):
             return None
         self.frames_received += 1
-        return self.frames_received, self.frames[self.frames_received - 1]
+        return self.frames_received, Picture.from_bgr(self.frames[self.frames_received - 1])
 
 
 class Walker:
