@@ -115,6 +115,13 @@ says how many frames arrived, how many the model looked at and how long that too
 `motion_threshold` above 0, a picture that has hardly changed is not shown to the model
 again, for up to five seconds.
 
+A camera with `only_after_dark` is watched only between sunset and sunrise at the
+configured location. By day its stream is closed and the model does not run, which on
+an always-on PC saves about two CPU cores, so set it whenever every light the camera
+switches is `only_after_dark` as well. The service looks at the sun once a minute and
+logs when watching stops and starts again. At sunrise a zone still occupied comes clear
+and its light goes off in the usual time, as for a camera that stops sending frames.
+
 SIGTERM or Ctrl-C switches off every light it switched on, and then it exits. A camera
 that stops sending frames lets its zones come clear and its lights go off in the usual
 time. A configuration it cannot run with, including a model that will not load, exits

@@ -6,20 +6,28 @@ import signal
 import socket
 import threading
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
 
 import cv2
 import numpy as np
 import pytest
 
-from pihome_vision import __main__, camera, detect, service
+from pihome_vision import __main__, camera, detect, service, sun
 from pihome_vision.camera import Picture
-from pihome_vision.config import Camera
+from pihome_vision.config import Camera, Light
 from pihome_vision.detect import Detection, Frame, ModelError
 from pihome_vision.hub import RelayState
 from pihome_vision.lights import Lights
-from pihome_vision.service import MAX_SKIP, STATS_SECONDS, Pipeline, Stillness
+from pihome_vision.service import (
+    FRAME_WAIT,
+    MAX_SKIP,
+    STATS_SECONDS,
+    SUN_CHECK,
+    Pipeline,
+    Stillness,
+)
+from pihome_vision.triggers import Event
 from tests.conftest import CAMERA_URL, HUB_KEY, Plan
 from tests.fake_hub import FakeHub
 
@@ -51,15 +59,28 @@ class Clock:
 
 
 class Frames:
-    """Frames handed out one a call, each a step of the clock apart, then none."""
+    """Frames handed out one a call, each a step of the clock apart, then none. Reading
+    them once stopped is a mistake."""
 
     def __init__(self, clock: Clock, frames: list[Frame], step: float = 0.2) -> None:
         self.clock = clock
         self.frames = frames
         self.step = step
         self.frames_received = 0
+        self.stopped = False
+        #: Each start and stop, with when.
+        self.switched: list[tuple[str, float]] = []
+
+    def start(self) -> None:
+        self.stopped = False
+        self.switched.append(("start", self.clock.now))
+
+    def stop(self) -> None:
+        self.stopped = True
+        self.switched.append(("stop", self.clock.now))
 
     def next_frame(self, after: int, timeout: float) -> tuple[int, Picture] | None:
+        assert not self.stopped, "read from a stopped camera"
         if self.frames_received >= len(self.frames):
             self.clock.now += timeout
             return None
@@ -84,6 +105,63 @@ class NoRelays:
 
     def switch(self, relay: str, *, on: bool) -> bool:
         raise AssertionError
+
+
+class Relays:
+    """Relays that switch at once, and keep when they did."""
+
+    def __init__(self, clock: Clock) -> None:
+        self.clock = clock
+        self.on: set[str] = set()
+        self.switched: list[tuple[bool, float]] = []
+
+    def read(self, relay: str) -> bool:
+        return relay in self.on
+
+    def switch(self, relay: str, *, on: bool) -> bool:
+        if on:
+            self.on.add(relay)
+        else:
+            self.on.discard(relay)
+        self.switched.append((on, self.clock.now))
+        return on
+
+
+class Switching(Lights):
+    """Lights that switch as soon as they decide to, rather than in a thread."""
+
+    def update(self, events: Sequence[Event], active: frozenset[str], now: float) -> None:
+        super().update(events, active, now)
+        self.pump()
+
+
+class Sky:
+    """Dark while ``dark`` says it is, counting how often it is asked."""
+
+    def __init__(self, dark: Callable[[], bool]) -> None:
+        self.dark = dark
+        self.asked = 0
+
+    def is_dark(self) -> bool:
+        self.asked += 1
+        return self.dark()
+
+
+class Until(threading.Event):
+    """Set once the clock reaches ``end``. Waiting on it lets the time go by."""
+
+    def __init__(self, clock: Clock, end: float) -> None:
+        super().__init__()
+        self.clock = clock
+        self.end = end
+
+    def is_set(self) -> bool:
+        return self.clock.now >= self.end
+
+    def wait(self, timeout: float | None = None) -> bool:
+        assert timeout is not None
+        self.clock.now = min(self.clock.now + timeout, self.end)
+        return self.is_set()
 
 
 def gate(**overrides: object) -> Camera:
@@ -193,6 +271,94 @@ class TestPipeline:
         assert line.endswith("active: yard; lit: none")
 
 
+#: When the test's sky is dark, on its clock, which starts at 100.
+DUSK, DAWN = 1000.0, 2000.0
+
+
+def overnight(
+    clock: Clock, detector: Counting, lights: Lights | None = None, **overrides: object
+) -> tuple[Pipeline, Frames, Sky]:
+    """A pipeline for a camera watched only after dark, with frames for as long as it
+    is open, and the sky that tells it when."""
+    source = Frames(clock, [picture(50)] * 10_000)
+    sky = Sky(lambda: DUSK <= clock.now < DAWN)
+    watched = gate(**({"only_after_dark": True} | overrides))
+    lights = lights or Lights([], NoRelays())
+    return Pipeline(watched, source, detector, lights, darkness=sky, clock=clock), source, sky
+
+
+class TestAfterDark:
+    def test_the_camera_is_open_from_dusk_to_dawn_and_read_only_then(self) -> None:
+        clock, detector = Clock(), Counting([])
+        run, source, _ = overnight(clock, detector)
+
+        run.run(Until(clock, 3000))
+
+        (start, opened), (stop, closed) = source.switched
+        assert (start, stop) == ("start", "stop")
+        assert DUSK <= opened < DUSK + SUN_CHECK + FRAME_WAIT
+        assert DAWN <= closed < DAWN + SUN_CHECK + FRAME_WAIT
+        assert detector.calls == source.frames_received > 0
+
+    def test_the_sun_is_asked_about_once_a_minute(self) -> None:
+        clock = Clock()
+        run, _, sky = overnight(clock, Counting([]))
+
+        run.run(Until(clock, 3000))
+
+        assert sky.asked == pytest.approx((3000 - 100) / SUN_CHECK, abs=2)
+
+    def test_a_camera_watched_day_and_night_never_asks_the_sun(self) -> None:
+        clock = Clock()
+        run, source, sky = overnight(clock, Counting([]), only_after_dark=False)
+
+        run.run(Until(clock, 3000))
+
+        assert source.switched == [("start", 100.0)]
+        assert sky.asked == 0
+
+    def test_at_dawn_its_zones_come_clear_and_its_light_goes_off(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Somebody stands in the yard all night, and is still there at sunrise."""
+        clock = Clock()
+        relays = Relays(clock)
+        light = Light.model_validate(
+            {"relay": RELAY, "triggers": ["yard"], "off_after_seconds": 30}
+        )
+        lights = Switching([light], relays, clock=clock)
+        run, source, _ = overnight(clock, Counting([SOMEBODY]), lights)
+
+        with caplog.at_level(logging.INFO, logger="pihome_vision.service"):
+            run.run(Until(clock, 3000))
+
+        (_, opened), (_, closed) = source.switched
+        (on, lit), (off, darkened) = relays.switched
+        assert (on, off) == (True, False)
+        assert opened < lit < opened + 1
+        assert closed + 30 <= darkened < closed + 30 + 5
+        assert run._watcher.active == set()
+        assert "gate/yard: clear" in caplog.text
+
+    def test_it_says_nothing_of_frames_while_the_camera_is_closed(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        clock = Clock()
+        run, source, _ = overnight(clock, Counting([]))
+        end = DUSK + SUN_CHECK + 2 * STATS_SECONDS
+
+        with caplog.at_level(logging.INFO, logger="pihome_vision.service"):
+            run.run(Until(clock, end))
+
+        ((_, opened),) = source.switched
+        lines = [r.message for r in caplog.records if "frames/s" in r.message]
+        assert len(lines) == (end - opened) // STATS_SECONDS
+        # Each a minute's worth, the first not spread over the day before it.
+        assert all(line.startswith("gate: 5.0 frames/s from the camera") for line in lines)
+        assert "gate: daylight; not watching until dark" in caplog.text
+        assert "gate: dark; watching" in caplog.text
+
+
 # The whole service, through the command line: the stand-in ffmpeg as the camera, a
 # model that sees somebody in the frames of a chosen brightness, and a stand-in hub.
 
@@ -226,6 +392,13 @@ class FailsLater(SeesSomebody):
         return []
 
 
+class StandsThere(SeesSomebody):
+    """Somebody in every frame."""
+
+    def detect(self, frame: Frame) -> list[Detection]:
+        return [SOMEBODY]
+
+
 class Broken(SeesSomebody):
     def detect(self, frame: Frame) -> list[Detection]:
         msg = "the model would not run on a 640x640 input"
@@ -237,16 +410,25 @@ def started(
     hub: FakeHub, plan: Plan, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> Callable[..., None]:
     """The environment and configuration for one light that follows one zone, and a
-    camera playing the given run."""
+    camera playing the given run: only after dark, if given a ``dark`` to say when."""
 
-    def start(run: dict[str, object], detector: type | None = SeesSomebody) -> None:
+    def start(
+        run: dict[str, object],
+        detector: type | None = SeesSomebody,
+        dark: Callable[[], bool] | None = None,
+    ) -> None:
         config = tmp_path / "vision.yaml"
         config.write_text(
             f"""
+location:
+  latitude: 50.4501
+  longitude: 30.5234
+  timezone: Europe/Kyiv
 model:
   path: {tmp_path / "model.onnx"}
 cameras:
   - id: gate
+    only_after_dark: {"false" if dark is None else "true"}
     triggers:
       - kind: zone
         id: yard
@@ -272,6 +454,10 @@ lights:
         monkeypatch.setattr(service, "FRAME_WAIT", 0.05)
         if detector is not None:
             monkeypatch.setattr(detect, "Detector", detector)
+        if dark is not None:
+            monkeypatch.setattr(sun, "Sun", lambda _: Sky(dark))
+            # As often as a step, rather than once a minute.
+            monkeypatch.setattr(service, "SUN_CHECK", 0.05)
 
     return start
 
@@ -326,6 +512,25 @@ def test_stopping_switches_its_light_off(
     assert time.monotonic() - SENT[-1] < 3
     assert hub.puts == [(RELAY, True), (RELAY, False)]
     assert hub.relays[RELAY] is False
+
+
+def test_at_dawn_the_camera_closes_and_its_light_goes_off(
+    started: Callable[..., None],
+    terminate: Callable[[Callable[[], bool]], None],
+    hub: FakeHub,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Somebody is in the yard for good, and the sun rises once the light is on."""
+    started({"frames": 100_000, "interval": 0.01}, detector=StandsThere, dark=lambda: not hub.puts)
+    terminate(lambda: len(hub.puts) >= 2)
+
+    with caplog.at_level(logging.INFO, logger="pihome_vision.service"):
+        assert __main__.main(["run"]) == 0
+
+    assert hub.puts == [(RELAY, True), (RELAY, False)]
+    said = [r.message for r in caplog.records]
+    assert said.index("gate: dark; watching") < said.index("gate/yard: active")
+    assert said.index("gate: daylight; not watching until dark") < said.index("gate/yard: clear")
 
 
 def test_a_light_somebody_else_switched_on_is_left_on(
@@ -444,6 +649,23 @@ def test_systemd_hears_it_is_ready_then_alive_then_stopping(
     assert systemd.states[0] == "READY=1"
     assert systemd.states[-1] == "STOPPING=1"
     assert set(systemd.states[1:-1]) == {"WATCHDOG=1"}
+
+
+def test_waiting_for_dark_it_is_alive_and_stops_at_once(
+    started: Callable[..., None],
+    terminate: Callable[[Callable[[], bool]], None],
+    hub: FakeHub,
+    systemd: Systemd,
+    tmp_path: Path,
+) -> None:
+    started({"frames": 100, "interval": 0.01, "then": "hang"}, dark=lambda: False)
+    terminate(lambda: systemd.alive() >= 3)
+
+    assert __main__.main(["run"]) == 0
+    assert systemd.alive() >= 3
+    assert time.monotonic() - SENT[-1] < 1
+    assert not (tmp_path / "plan.count").exists(), "ffmpeg was started"
+    assert hub.puts == []
 
 
 #: When the stand-in model below hung, on the monotonic clock, and what lets it go.

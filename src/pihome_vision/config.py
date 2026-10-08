@@ -160,6 +160,9 @@ class Camera(_Strict):
     #: Skip detection while the picture has changed less than this since the last
     #: detection, as a mean difference of grey levels (0-255). 0 always detects.
     motion_threshold: Annotated[float, Field(ge=0.0, le=255.0)] = 0.0
+    #: Only watch between sunset and sunrise at ``location``. By day the stream is
+    #: closed and the model idle.
+    only_after_dark: StrictBool = False
     triggers: Annotated[list[Trigger], Field(min_length=1)]
 
 
@@ -193,6 +196,9 @@ class VisionConfig(_Strict):
     def _consistent(self) -> Self:
         seen: set[str] = set()
         for camera in self.cameras:
+            if camera.only_after_dark and self.location is None:
+                msg = f"camera {camera.id!r} is only_after_dark, which needs a location"
+                raise ValueError(msg)
             for trigger in camera.triggers:
                 if trigger.id in seen:
                     msg = f"trigger {trigger.id!r} is defined more than once"

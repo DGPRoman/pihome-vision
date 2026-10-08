@@ -6,11 +6,17 @@ in its own thread too, and the pipeline always takes the newest, so a detector s
 than the camera skips frames rather than falling behind. :func:`serve` runs them until
 SIGTERM or SIGINT, then switches off every light the service switched on. Under
 systemd it says when it is ready, and keeps saying it is alive while the pipeline moves.
+
+A camera that is ``only_after_dark`` is closed by day, and the model is not run. The
+pipeline asks the sun about it every :data:`SUN_CHECK`, and in between goes on as it
+would for a camera that has gone quiet, so that at sunrise its zones come clear and its
+lights go off in the usual time.
 """
 
 from __future__ import annotations
 
 import logging
+import math
 import signal
 import threading
 import time
@@ -24,7 +30,7 @@ from pihome_vision import systemd
 from pihome_vision.camera import Picture
 from pihome_vision.config import EXIT_CONFIGURATION_ERROR, Camera
 from pihome_vision.detect import Detection, Frame, ModelError
-from pihome_vision.lights import Lights
+from pihome_vision.lights import Darkness, Lights
 from pihome_vision.triggers import Watcher
 
 #: Seconds to wait for a frame before letting time pass without one. A camera that has
@@ -37,6 +43,10 @@ MAX_SKIP: Final = 5.0
 
 #: Seconds between log lines saying how the pipeline is doing.
 STATS_SECONDS: Final = 60.0
+
+#: How often a camera watched only after dark asks whether it is, in seconds. Twilight
+#: lasts half an hour after sunset, so a minute late to notice it is in good time.
+SUN_CHECK: Final = 60.0
 
 #: How long stopping waits for the pipeline to finish its step, in seconds. A step takes
 #: at most :data:`FRAME_WAIT` and one model run; one that takes longer is stuck.
@@ -64,6 +74,15 @@ class Frames(Protocol):
     def frames_received(self) -> int: ...
 
     def next_frame(self, after: int, timeout: float) -> tuple[int, Picture] | None: ...
+
+
+class Source(Frames, Protocol):
+    """Frames to be had only between :meth:`start` and :meth:`stop`, which can be
+    called again in turn: a :class:`~pihome_vision.camera.Camera`."""
+
+    def start(self) -> None: ...
+
+    def stop(self) -> None: ...
 
 
 class Detects(Protocol):
@@ -102,22 +121,32 @@ class Stillness:
 
 class Pipeline:
     """One camera: each frame through the model, the tracker and its triggers, and
-    what changed on to the lights."""
+    what changed on to the lights.
 
-    def __init__(
+    :meth:`run` opens the camera, and for one that is ``only_after_dark`` closes it at
+    sunrise and opens it again at sunset, by ``darkness``. :meth:`close` closes it for
+    good.
+    """
+
+    def __init__(  # noqa: PLR0913 - the four parts it joins, and two ways of telling time
         self,
         camera: Camera,
-        frames: Frames,
+        frames: Source,
         detector: Detects,
         lights: Lights,
         *,
+        darkness: Darkness | None = None,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self.camera = camera
         self._frames = frames
         self._detector = detector
         self._lights = lights
+        self._darkness = darkness
         self._clock = clock
+        #: Whether the camera is open: None until :meth:`run` has first looked.
+        self._watching: bool | None = None
+        self._looked_at = -math.inf
         self._watcher = Watcher(camera)
         self._stillness = Stillness(camera.motion_threshold)
         self._last = 0
@@ -134,8 +163,18 @@ class Pipeline:
 
     def run(self, stop: threading.Event) -> None:
         while not stop.is_set():
-            self.step()
+            if self._watch():
+                self.step()
+            else:
+                # Nothing to see with the camera closed: time passes as it would
+                # waiting for a frame, and stopping need not wait for it.
+                stop.wait(FRAME_WAIT)
+                self._follow([], self._clock())
             self.stepped_at = time.monotonic()
+
+    def close(self) -> None:
+        """Close the camera, and wait for ffmpeg to be gone."""
+        self._frames.stop()
 
     def step(self) -> None:
         """Take the next frame, or wait :data:`FRAME_WAIT` for one, and act on it."""
@@ -156,12 +195,41 @@ class Pipeline:
                 self._detected += 1
             # A still picture has what it had when the model last looked.
             detections = self._previous
+        self._follow(detections, now)
+        if now - self._stats_at >= STATS_SECONDS:
+            self._report(now)
+
+    def _watch(self) -> bool:
+        """Whether the camera is to be watched now, opening or closing it to match."""
+        now = self._clock()
+        if self._watching is not None and now - self._looked_at < SUN_CHECK:
+            return self._watching
+        self._looked_at = now
+        wanted = not self.camera.only_after_dark or (
+            self._darkness is not None and self._darkness.is_dark()
+        )
+        if wanted is self._watching:
+            return wanted
+        if wanted:
+            self._frames.start()
+            # Counted from now, so the first figures after dusk are not spread over the day.
+            self._count_from(now, self._frames.frames_received)
+        elif self._watching:
+            self._frames.stop()
+        if self.camera.only_after_dark:
+            if wanted:
+                _log.info("%s: dark; watching", self.camera.id)
+            else:
+                _log.info("%s: daylight; not watching until dark", self.camera.id)
+        self._watching = wanted
+        return wanted
+
+    def _follow(self, detections: list[Detection], now: float) -> None:
+        """One frame's ``detections``, or none, through the triggers to the lights."""
         events = self._watcher.update(detections, *self._size, now)
         for event in events:
             _log.info("%s/%s: %s", self.camera.id, event.trigger, event.change)
         self._lights.update(events, self._watcher.active, now)
-        if now - self._stats_at >= STATS_SECONDS:
-            self._report(now)
 
     def _report(self, now: float) -> None:
         elapsed = now - self._stats_at
@@ -178,18 +246,15 @@ class Pipeline:
             ", ".join(sorted(self._watcher.active)) or "none",
             ", ".join(sorted(self._lights.lit)) or "none",
         )
+        self._count_from(now, received)
+
+    def _count_from(self, now: float, received: int) -> None:
         self._stats_at, self._received = now, received
         self._examined = self._detected = 0
         self._inference = 0.0
 
 
-class _Source(Protocol):
-    def start(self) -> None: ...
-
-    def stop(self) -> None: ...
-
-
-def serve(pipeline: Pipeline, camera: _Source, lights: Lights) -> int:
+def serve(pipeline: Pipeline, lights: Lights) -> int:
     """Run ``pipeline`` until SIGTERM or SIGINT, and return the exit status.
 
     On the way out the lights are switched off before the camera is closed, which can
@@ -218,9 +283,9 @@ def serve(pipeline: Pipeline, camera: _Source, lights: Lights) -> int:
     thread = threading.Thread(target=work, name=f"pipeline {pipeline.camera.id}", daemon=True)
     try:
         lights.start()
-        camera.start()
         thread.start()
-        _log.info("watching camera %s", pipeline.camera.id)
+        after_dark = " after dark" if pipeline.camera.only_after_dark else ""
+        _log.info("watching camera %s%s", pipeline.camera.id, after_dark)
         systemd.notify("READY=1")
         while not stop.wait(tick):
             # Only while the pipeline moves: systemd restarts one stuck for good.
@@ -238,7 +303,7 @@ def serve(pipeline: Pipeline, camera: _Source, lights: Lights) -> int:
                 time.monotonic() - pipeline.stepped_at,
             )
         lights.stop()
-        camera.stop()
+        pipeline.close()
         for sig, handler in previous.items():
             signal.signal(sig, handler)
 

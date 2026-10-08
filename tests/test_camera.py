@@ -434,6 +434,30 @@ class TestCamera:
         finally:
             source.stop()
 
+    def test_it_starts_again_after_stopping_and_numbers_on(self, plan: Plan) -> None:
+        """As at dusk, after a day closed: no frame from before is handed out as new."""
+        command = plan({"frames": 3, "then": "hang"}, {"frames": 1, "then": "hang"})
+        source = Camera(CAMERA_URL, command=command, timeouts=Timeouts(stall=30))
+
+        source.start()
+        try:
+            assert self._frames_until(source, 3)[-1] == 3
+        finally:
+            source.stop()
+        source.start()
+        try:
+            again = source.next_frame(2, timeout=5)
+        finally:
+            source.stop()
+
+        assert again is not None
+        number, picture = again
+        assert number == 4
+        assert picture == Picture(fake_ffmpeg.frame(4), fake_ffmpeg.WIDTH, fake_ffmpeg.HEIGHT)
+
+    def test_a_camera_never_started_has_nothing_to_stop(self) -> None:
+        Camera(CAMERA_URL).stop()
+
     def test_stopping_does_not_wait_for_a_camera_that_is_not_answering(self, plan: Plan) -> None:
         command = plan({"header": False, "then": "hang"})
         source = Camera(CAMERA_URL, command=command, timeouts=Timeouts(open=30))
