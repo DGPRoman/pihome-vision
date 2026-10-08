@@ -36,6 +36,9 @@ class Request:
 class FakeHub:
     key: str
     relays: dict[str, bool] = field(default_factory=dict)
+    #: Whether each relay's automation is on. A relay not in it is answered without
+    #: the field, as a hub from before it is.
+    automatic: dict[str, bool] = field(default_factory=dict)
     requests: list[Request] = field(default_factory=list)
     #: Statuses to answer with, one per request, before answering properly again.
     statuses: deque[int] = field(default_factory=deque)
@@ -99,7 +102,10 @@ def serve(hub: FakeHub) -> ThreadingHTTPServer:
             else:
                 if body is not None:
                     hub.relays[relay] = body["on"]
-                self._send(HTTPStatus.OK, {"id": relay, "on": hub.relays[relay]})
+                state: dict[str, Any] = {"id": relay, "on": hub.relays[relay]}
+                if relay in hub.automatic:
+                    state["automatic"] = hub.automatic[relay]
+                self._send(HTTPStatus.OK, state)
             if hub.hang_up:
                 hub.hang_up = False
                 self.close_connection = True

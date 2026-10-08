@@ -7,7 +7,7 @@ from collections.abc import Sequence
 import pytest
 
 from pihome_vision.config import Light
-from pihome_vision.hub import HubError, Refusal
+from pihome_vision.hub import HubError, Refusal, RelayState
 from pihome_vision.lights import (
     MAX_RETRY_WAIT,
     OFF_PATIENCE,
@@ -185,6 +185,73 @@ def test_it_lights_again_next_time(hub: FakeHub) -> None:
     assert hub.puts == [(RELAY, True), (RELAY, False)] * 2
 
 
+@pytest.mark.parametrize("automatic", [True, None], ids=["on", "not-said"])
+def test_a_light_whose_automation_is_on_is_switched(hub: FakeHub, automatic: bool | None) -> None:
+    """None is a hub from before automation could be turned off, which does not say."""
+    if automatic is not None:
+        hub.automatic[RELAY] = automatic
+    scene = Scene(hub)
+
+    scene.comes_and_goes()
+
+    assert hub.puts == [(RELAY, True), (RELAY, False)]
+
+
+def test_a_light_whose_automation_is_off_is_not_switched_on(
+    hub: FakeHub, caplog: pytest.LogCaptureFixture
+) -> None:
+    hub.automatic[RELAY] = False
+    scene = Scene(hub)
+
+    with caplog.at_level(logging.INFO, logger="pihome_vision.lights"):
+        scene.comes_and_goes()
+        scene.comes_and_goes()
+
+    assert hub.puts == []
+    assert hub.relays[RELAY] is False
+    assert [r.method for r in hub.requests] == ["GET", "GET"]
+    assert caplog.text.count(f"automation is off for {RELAY} in the hub") == 2
+
+
+def test_turning_automation_off_while_it_is_lit_is_not_fought(
+    hub: FakeHub, caplog: pytest.LogCaptureFixture
+) -> None:
+    scene = Scene(hub)
+    scene.zone("active")
+
+    hub.automatic[RELAY] = False
+    hub.relays[RELAY] = False  # as the hub does when automation is turned off
+    with caplog.at_level(logging.INFO, logger="pihome_vision.lights"):
+        scene.later(5, ["drive"])
+        scene.zone("clear")
+        scene.later(OFF_AFTER)
+        scene.comes_and_goes()
+
+    assert hub.puts == [(RELAY, True)]
+    assert hub.relays[RELAY] is False
+    assert scene.lights.lit == set()
+    assert [r.levelno for r in caplog.records if r.levelno >= logging.WARNING] == []
+
+
+@pytest.mark.parametrize("ending", ["triggers end", "program stops"])
+def test_a_light_whose_automation_is_off_is_not_switched_off_either(
+    hub: FakeHub, ending: str
+) -> None:
+    scene = Scene(hub)
+    scene.zone("active")
+
+    hub.automatic[RELAY] = False
+    hub.relays[RELAY] = True  # turned off with automation, and on again by hand
+    if ending == "triggers end":
+        scene.zone("clear")
+        scene.later(OFF_AFTER)
+    else:
+        scene.lights.stop()
+
+    assert hub.puts == [(RELAY, True)]
+    assert hub.relays[RELAY] is True
+
+
 def test_a_wrong_key_is_tried_exactly_once(hub: FakeHub, caplog: pytest.LogCaptureFixture) -> None:
     scene = Scene(hub, key="w" * 48)
 
@@ -344,9 +411,9 @@ class LostAnswers:
         self.lost = lost
         self.calls: list[str] = []
 
-    def read(self, relay: str) -> bool:
+    def read(self, relay: str) -> RelayState:
         self.calls.append("GET")
-        return self.on
+        return RelayState(self.on)
 
     def switch(self, relay: str, *, on: bool) -> bool:
         self.calls.append("PUT on" if on else "PUT off")

@@ -4,7 +4,7 @@ import socket
 
 import pytest
 
-from pihome_vision.hub import Hub, HubError, Refusal
+from pihome_vision.hub import Hub, HubError, Refusal, RelayState
 from tests import fake_hub
 from tests.conftest import HUB_KEY
 from tests.fake_hub import FakeHub
@@ -13,9 +13,22 @@ from tests.fake_hub import FakeHub
 def test_reads_a_relay_with_the_key(hub: FakeHub) -> None:
     hub.relays["gate-light"] = True
 
-    assert hub.client().read("gate-light") is True
+    assert hub.client().read("gate-light") == RelayState(on=True, automatic=True)
     (request,) = hub.requests
     assert (request.method, request.path, request.key) == ("GET", "/v1/relays/gate-light", HUB_KEY)
+
+
+def test_reads_whether_automation_is_on(hub: FakeHub) -> None:
+    hub.automatic["gate-light"] = False
+
+    assert hub.client().read("gate-light") == RelayState(on=False, automatic=False)
+
+
+def test_a_hub_that_does_not_say_is_taken_as_leaving_automation_on(hub: FakeHub) -> None:
+    """As a hub from before the field does."""
+    assert "gate-light" not in hub.automatic
+
+    assert hub.client().read("gate-light").automatic is True
 
 
 def test_switches_a_relay_and_says_what_it_is_now(hub: FakeHub) -> None:
@@ -137,10 +150,19 @@ def test_a_proxy_in_the_environment_is_not_used(
     monkeypatch.delenv("no_proxy", raising=False)
     monkeypatch.delenv("NO_PROXY", raising=False)
 
-    assert hub.client(timeout=2).read("gate-light") is False
+    assert hub.client(timeout=2).read("gate-light").on is False
 
 
-@pytest.mark.parametrize("body", [b"not json", b"[]", b'{"on": "yes"}', b'{"id": "gate-light"}'])
+@pytest.mark.parametrize(
+    "body",
+    [
+        b"not json",
+        b"[]",
+        b'{"on": "yes"}',
+        b'{"id": "gate-light"}',
+        b'{"on": true, "automatic": 0}',
+    ],
+)
 def test_an_answer_without_a_state_is_refused(hub: FakeHub, body: bytes) -> None:
     hub.body = body
 

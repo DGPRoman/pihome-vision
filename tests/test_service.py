@@ -17,6 +17,7 @@ from pihome_vision import __main__, camera, detect, service
 from pihome_vision.camera import Picture
 from pihome_vision.config import Camera
 from pihome_vision.detect import Detection, Frame, ModelError
+from pihome_vision.hub import RelayState
 from pihome_vision.lights import Lights
 from pihome_vision.service import MAX_SKIP, STATS_SECONDS, Pipeline, Stillness
 from tests.conftest import CAMERA_URL, HUB_KEY, Plan
@@ -78,7 +79,7 @@ class Counting:
 
 
 class NoRelays:
-    def read(self, relay: str) -> bool:
+    def read(self, relay: str) -> RelayState:
         raise AssertionError
 
     def switch(self, relay: str, *, on: bool) -> bool:
