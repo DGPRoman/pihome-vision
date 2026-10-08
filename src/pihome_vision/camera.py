@@ -422,9 +422,10 @@ def _rate(field: str | None) -> float | None:
 class Camera:
     """Keeps a camera's newest frame to hand, reconnecting whenever its stream fails.
 
-    A thread reads the stream for as long as :meth:`start` to :meth:`stop`. Frames are
-    numbered as they arrive, and :meth:`next_frame` hands out the newest one after a
-    given number, so a reader that falls behind skips to the present.
+    A thread reads the stream for as long as :meth:`start` to :meth:`stop`, and the two
+    can be called again in turn, to read only by night say. Frames are numbered as they
+    arrive, on from one start to the next, and :meth:`next_frame` hands out the newest
+    one after a given number, so a reader that falls behind skips to the present.
     """
 
     def __init__(
@@ -444,22 +445,30 @@ class Camera:
         self._changed = threading.Condition()
         self._latest: tuple[int, bytes, int, int] | None = None
         self._number = 0
-        self._thread = threading.Thread(target=self._run, name="camera", daemon=True)
+        self._thread: threading.Thread | None = None
 
     def start(self) -> None:
+        """Start reading, for the first time or again after :meth:`stop`."""
+        with self._changed:
+            # The newest frame from before is not the present.
+            self._latest = None
+        self._stopping.clear()
+        self._thread = threading.Thread(target=self._run, name="camera", daemon=True)
         self._thread.start()
 
     def stop(self) -> None:
-        """Stop reading, and wait for ffmpeg to be gone."""
+        """Stop reading, and wait for ffmpeg to be gone. A camera that was never started
+        has nothing to stop."""
         self._stopping.set()
         with self._changed:
             self._changed.notify_all()
-        self._thread.join()
+        if self._thread is not None:
+            self._thread.join()
 
     @property
     def frames_received(self) -> int:
-        """Frames read since :meth:`start`, across every reconnection. The newest frame
-        has this number."""
+        """Frames read since the first :meth:`start`, across every reconnection and
+        restart. The newest frame has this number."""
         with self._changed:
             return self._number
 

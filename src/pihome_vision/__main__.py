@@ -321,8 +321,8 @@ def _run(_: argparse.Namespace) -> int:
         # One camera: the configuration allows no more yet.
         (watched,) = config.cameras
         source = camera.Camera(settings.camera_url.get_secret_value(), fps=watched.fps)
-        pipeline = service.Pipeline(watched, source, detector, lights)
-        return service.serve(pipeline, source, lights)
+        pipeline = service.Pipeline(watched, source, detector, lights, darkness=sun)
+        return service.serve(pipeline, lights)
 
 
 def build_parser() -> argparse.ArgumentParser:

@@ -7,7 +7,8 @@
 # person or a vehicle counts: a zone holds whoever it overlaps, and a line fires when
 # somebody reaches it.
 
-# Needed only when a light is only_after_dark. A city centre is close enough.
+# Needed only when a light or a camera is only_after_dark. A city centre is close
+# enough.
 location:
   latitude: 50.4501
   longitude: 30.5234
@@ -37,6 +38,10 @@ cameras:
     fps: 5
     # Skip detection while the picture is still. 0 always detects.
     motion_threshold: 0
+    # Watch only between sunset and sunrise at the location above. By day the stream
+    # is closed and the model idle, which saves a couple of CPU cores; worth it when
+    # every light below is only_after_dark too.
+    only_after_dark: true
     triggers:
       # Lit while a car stands on the drive, and for a while after it leaves.
       - kind: zone

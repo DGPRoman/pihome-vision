@@ -42,6 +42,7 @@ def test_the_example_loads() -> None:
 
 def test_defaults_fill_what_is_left_out(document: dict[str, Any]) -> None:
     del document["location"]
+    del document["cameras"][0]["only_after_dark"]
     document["lights"] = [{"relay": "gate-light", "triggers": ["wicket"]}]
     document["cameras"][0]["triggers"][0] = {
         "kind": "zone",
@@ -57,6 +58,7 @@ def test_defaults_fill_what_is_left_out(document: dict[str, Any]) -> None:
     assert (zone.min_seconds, zone.clear_seconds) == (1.0, 5.0)
     assert config.lights[0].off_after_seconds == 120.0
     assert config.lights[0].only_after_dark is False
+    assert config.cameras[0].only_after_dark is False
     assert config.model.threads is None
     assert config.model.input_size is None
 
@@ -127,10 +129,16 @@ def test_one_relay_has_one_light(document: dict[str, Any]) -> None:
     assert "'gate-light' has more than one light" in refusal(document)
 
 
-def test_after_dark_needs_a_location(document: dict[str, Any]) -> None:
+@pytest.mark.parametrize(
+    ("section", "named"), [("cameras", "camera 'gate'"), ("lights", "light 'gate-light'")]
+)
+def test_after_dark_needs_a_location(document: dict[str, Any], section: str, named: str) -> None:
     del document["location"]
+    for entry in document["cameras"] + document["lights"]:
+        entry["only_after_dark"] = False
+    document[section][0]["only_after_dark"] = True
 
-    assert "needs a location" in refusal(document)
+    assert f"{named} is only_after_dark, which needs a location" in refusal(document)
 
 
 def test_a_time_zone_must_exist(document: dict[str, Any]) -> None:
