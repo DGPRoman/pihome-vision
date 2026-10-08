@@ -115,8 +115,8 @@ class Relays:
         self.on: set[str] = set()
         self.switched: list[tuple[bool, float]] = []
 
-    def read(self, relay: str) -> bool:
-        return relay in self.on
+    def read(self, relay: str) -> RelayState:
+        return RelayState(on=relay in self.on)
 
     def switch(self, relay: str, *, on: bool) -> bool:
         if on:
