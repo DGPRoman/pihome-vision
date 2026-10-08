@@ -12,7 +12,10 @@ people in the house:
   reads the relay, and if somebody has it on already, it leaves it alone, then and
   when its triggers end. Before switching off, it reads the relay again: a light
   somebody has switched off in the meantime stays off, and is not switched again
-  until the triggers end and start again.
+  until the triggers end and start again. A light whose automation somebody has
+  turned off in the hub is left alone too, on or off: the hub says so in the same
+  answers, so it costs no request, and a hub too old to say is taken as leaving
+  automation on.
 * **A late "on" is worse than none.** Lighting an empty yard a minute after the car
   has gone is a bug, so switching on is retried for :data:`ON_WINDOW` and then
   given up. Switching off is retried for :data:`OFF_PATIENCE`.
@@ -259,7 +262,10 @@ class Lights:
         say whether it is lit by this program afterwards."""
         if not wanted:
             return self._switch_off(switch)
-        if self._relays.read(switch.relay):
+        state = self._relays.read(switch.relay)
+        if not state.automatic:
+            return self._leave_to_people(switch)
+        if state.on:
             if switch.unanswered is True:
                 _log.info("%s is on: the request that went unanswered got there", switch.relay)
                 switch.unanswered = None
@@ -272,7 +278,10 @@ class Lights:
         return lit
 
     def _switch_off(self, switch: _Switch) -> bool:
-        if self._relays.read(switch.relay):
+        state = self._relays.read(switch.relay)
+        if not state.automatic:
+            return self._leave_to_people(switch)
+        if state.on:
             self._send(switch, on=False)
             _log.info("switched %s off", switch.relay)
         else:
@@ -281,6 +290,14 @@ class Lights:
             else:
                 _log.info("%s is off already: somebody switched it off", switch.relay)
             switch.unanswered = None
+        return False
+
+    @staticmethod
+    def _leave_to_people(switch: _Switch) -> bool:
+        """Take ``switch`` for somebody else's light, as the hub asks while its
+        automation is off, whatever this program lit or asked of it before."""
+        _log.info("automation is off for %s in the hub; leaving it alone", switch.relay)
+        switch.unanswered = None
         return False
 
     def _send(self, switch: _Switch, *, on: bool) -> bool:

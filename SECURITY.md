@@ -46,8 +46,9 @@ every client behind the same router.
 This service decides when a light goes off, so a light it switched on stays on until it
 says otherwise. Stopping the service, or shutting the machine down normally, switches
 off every light it switched on. A crash or a power cut cannot, and a light lit at that
-moment stays lit until somebody switches it off. A light that somebody else switched on
-is left alone, then and at any other time.
+moment stays lit until somebody switches it off. A light that somebody else switched on,
+or whose automation somebody has turned off in the hub, is left alone, then and at any
+other time.
 
 ## Handling secrets in this repository
 

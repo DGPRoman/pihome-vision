@@ -13,7 +13,7 @@ from collections.abc import Iterator
 import pytest
 
 from pihome_vision.config import Light
-from pihome_vision.hub import Hub, HubError, Refusal
+from pihome_vision.hub import Hub, HubError, Refusal, RelayState
 from pihome_vision.lights import Lights
 from pihome_vision.triggers import Event
 
@@ -35,7 +35,7 @@ class Counting:
         self.hub = hub
         self.requests = 0
 
-    def read(self, relay: str) -> bool:
+    def read(self, relay: str) -> RelayState:
         self.requests += 1
         return self.hub.read(relay)
 
@@ -69,10 +69,10 @@ def lights_for(relays: Hub | Counting) -> Lights:
 
 
 def test_reads_and_switches_a_relay(hub: Hub) -> None:
-    assert hub.read(RELAY) is False
+    assert hub.read(RELAY) == RelayState(on=False, automatic=True)
     assert hub.switch(RELAY, on=True) is True
-    assert hub.read(RELAY) is True
-    assert hub.read("porch-light") is False
+    assert hub.read(RELAY).on is True
+    assert hub.read("porch-light").on is False
 
 
 def test_a_relay_the_hub_does_not_have(hub: Hub) -> None:
@@ -94,12 +94,12 @@ def test_a_light_comes_on_and_goes_off(hub: Hub) -> None:
 
     lights.update([Event("drive", "active", 0.0)], frozenset({"drive"}), 0.0)
     lights.pump()
-    assert hub.read(RELAY) is True
+    assert hub.read(RELAY).on is True
 
     lights.update([Event("drive", "clear", 1.0)], frozenset(), 1.0)
     lights.update([], frozenset(), 1.0 + 60.0)
     lights.pump()
-    assert hub.read(RELAY) is False
+    assert hub.read(RELAY).on is False
 
 
 def test_a_light_already_on_is_left_on(hub: Hub) -> None:
@@ -107,7 +107,7 @@ def test_a_light_already_on_is_left_on(hub: Hub) -> None:
 
     come_and_go(lights_for(hub))
 
-    assert hub.read(RELAY) is True
+    assert hub.read(RELAY).on is True
 
 
 def test_a_wrong_key_is_tried_once(hub: Hub) -> None:
@@ -119,7 +119,7 @@ def test_a_wrong_key_is_tried_once(hub: Hub) -> None:
         come_and_go(lights)
 
     assert counting.requests == 1
-    assert hub.read(RELAY) is False
+    assert hub.read(RELAY).on is False
 
 
 def test_stopping_switches_off_what_it_lit(hub: Hub) -> None:
@@ -129,4 +129,4 @@ def test_stopping_switches_off_what_it_lit(hub: Hub) -> None:
 
     lights.stop()
 
-    assert hub.read(RELAY) is False
+    assert hub.read(RELAY).on is False

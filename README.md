@@ -13,7 +13,8 @@ tracked in this repository's issues and on the
 
 Everything is decided here: which light, for how long, and whether only after dark. The
 hub is told only to switch a relay on, and later off, with its relay key. A light that
-somebody switched on by hand is left alone.
+somebody switched on by hand is left alone, and so is one whose automation somebody has
+turned off in the hub.
 
 ## Configuration
 
@@ -39,6 +40,11 @@ was switched on by somebody else, and is left alone. Before switching it off, th
 service reads it again, so a light somebody switched off in the meantime is not touched.
 A light the hub cannot be reached to switch on is given up after ten seconds rather than
 lit for an empty yard later.
+
+The same reads say whether somebody has turned the light's automation off in the hub.
+While it is off the light is theirs: the service neither switches it on nor off, and
+says so in its log once each time it would have. A hub too old to say is taken as
+leaving automation on.
 
 Switching a relay through the hub's API cancels any countdown one of the hub's own rules
 had running on it, so give a light to the hub's rules or to this service, not both.

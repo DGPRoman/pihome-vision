@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import ssl
 import threading
+from dataclasses import dataclass
 from enum import Enum
 from http import HTTPStatus
 from http.client import HTTPConnection, HTTPException, HTTPSConnection
@@ -48,11 +49,22 @@ class HubError(Exception):
         self.refusal = refusal
 
 
+@dataclass(frozen=True, slots=True)
+class RelayState:
+    """A relay as the hub reports it."""
+
+    on: bool
+    #: False while somebody has turned automation off for it in the hub, which then
+    #: expects clients like this one to leave it alone. A hub too old to say is taken
+    #: as leaving automation on.
+    automatic: bool = True
+
+
 class Relays(Protocol):
     """What switching a light needs of the hub."""
 
-    def read(self, relay: str) -> bool:
-        """Whether ``relay`` is on."""
+    def read(self, relay: str) -> RelayState:
+        """Whether ``relay`` is on, and whether its automation is."""
         ...
 
     def switch(self, relay: str, *, on: bool) -> bool:
@@ -81,11 +93,11 @@ class Hub:
         self._connection: HTTPConnection | None = None
         self._lock = threading.Lock()
 
-    def read(self, relay: str) -> bool:
+    def read(self, relay: str) -> RelayState:
         return self._request("GET", relay, None)
 
     def switch(self, relay: str, *, on: bool) -> bool:
-        return self._request("PUT", relay, {"on": on})
+        return self._request("PUT", relay, {"on": on}).on
 
     def close(self) -> None:
         """Close the connection kept open; the next request opens another."""
@@ -103,7 +115,7 @@ class Hub:
     ) -> None:
         self.close()
 
-    def _request(self, method: str, relay: str, body: dict[str, bool] | None) -> bool:
+    def _request(self, method: str, relay: str, body: dict[str, bool] | None) -> RelayState:
         path = f"/v1/relays/{quote(relay, safe='')}"
         headers = {"X-API-Key": self._key, "Accept": "application/json"}
         data = None
@@ -114,7 +126,7 @@ class Hub:
             status, payload = self._exchange(method, path, data, headers)
         if status != HTTPStatus.OK:
             raise _refusal(status)
-        return _on(payload)
+        return _state(payload)
 
     def _exchange(
         self, method: str, path: str, data: bytes | None, headers: dict[str, str]
@@ -186,12 +198,17 @@ def _refusal(status: int) -> HubError:
     return HubError(Refusal.REJECTED, detail)
 
 
-def _on(payload: bytes) -> bool:
+def _state(payload: bytes) -> RelayState:
     try:
         state = json.loads(payload)
     except ValueError:
         state = None
-    on = state.get("on") if isinstance(state, dict) else None
+    if not isinstance(state, dict):
+        state = {}
+    on = state.get("on")
     if not isinstance(on, bool):
         raise HubError(Refusal.REJECTED, "the answer does not say whether the relay is on")
-    return on
+    automatic = state.get("automatic", True)
+    if not isinstance(automatic, bool):
+        raise HubError(Refusal.REJECTED, "the answer does not say whether automation is on")
+    return RelayState(on, automatic)
